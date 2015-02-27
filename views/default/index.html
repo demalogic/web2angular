@@ -1,0 +1,60 @@
+{{extend 'layout.html'}}
+<style>
+input.ng-invalid {
+	border : 1px solid red;
+	box-shadow : 1px 1px 3px red;
+    background: #ff9da4;
+}
+.ng-invalid::before {
+    content: ' ';
+    background: darkred;
+    border-radius: 50%;
+    width: 10px;
+    height: 10px;
+}
+.ng-valid::before{
+    content: ' ';
+    background: greenyellow;
+    border-radius: 50%;
+    width: 10px;
+    height: 10px;
+}
+td<input {
+    background: red;
+}
+
+</style>
+<script type="text/ng-template" id="prova.html">
+    <ul>
+        <li ng-repeat="item in items">
+            {* item *}
+        </li>
+    </ul>
+</script>
+
+<div ng-controller="demoCtrl">
+    <modelform
+        model="person"
+        new
+        on-submit="personCreated">
+    </modelform>
+
+    <span>{* person *}</span>
+    <p>{* waiting *}</p>
+    <h2>lista delle persone note</h2>
+    <w2pdata
+        resource="person"
+        >
+            <table class="table table-striped">
+                <tr ng-repeat="item in items" ng-click="select(item)">
+                    <td ng-repeat="field in fields">
+                        {* item[field] *}
+                    </td>
+                    <td>
+                        <span class="btn btn-danger" ng-click="ask('sicuro di voler eliminare ' + item.first_name + '?')&& $delete(item)">Elimina</span>
+                    </td>
+                </tr>
+            </table>
+    </w2pdata>
+</div>
+

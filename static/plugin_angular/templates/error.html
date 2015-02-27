@@ -1,0 +1,31 @@
+<div class="modal-header">
+    <h3 class="modal-title">
+        Si &egrave; verificato un errore
+    </h3>
+</div>
+<div class="modal-body" ng-if="options.debug">
+    <div class="alert alert-danger">
+        {* exception *}
+    </div>
+    <pre ng-show="traceback">
+        {* traceback *}
+    </pre>
+    <div class="icon-box icon-box-inverse" ng-show="message">
+        <i class="fa fa-cloud-download"></i>
+        <div class="icon-box-content" ng-bind-html="message">
+
+        </div>
+    </div>
+</div>
+<div class="modal-body" ng-if="!options.debug">
+    <div class="alert alert-danger">
+        Si &egrave; verificato un errore
+    </div>
+    <p>l&apos;errore &egrave; stato gi&aacute; stato segnalato al personale di <a>Demalogic S.r.l.</a></p>
+    <p>Provvederemo al pi&ugrave; presto a risolvere il problema.</p>
+    <p>Ci scusiamo per l&apos;inconveniente</p>
+    <div class="pull-right">Demalogic staff</div>
+</div>
+<div class="modal-footer">
+    <button class="btn btn-warning" ng-click="cancel()">Chiudi</button>
+</div>

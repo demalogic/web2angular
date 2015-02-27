@@ -1,0 +1,21 @@
+(dp1
+S'output'
+p2
+S"<type 'exceptions.AttributeError'> 'Table' object has no attribute 'username'"
+p3
+sS'layer'
+p4
+S'/Users/nihil/PycharmProjects/untitled/web2py/applications/ang2py/controllers/plugin_angular.py'
+p5
+sS'code'
+p6
+S'__author__ = \'nihil\'\n\nfrom plugin_angular import jsoned, Message\nfrom operator import isSequenceType\nfrom itertools import chain, imap\nmmin = min\nmmax = max\n\ndef regex2js(pattern):\n    """\n    translate a python regex to javascript regex\n    :param pattern: string: Pyhton regex patter\n    :return: string: javascript regex pattern\n    """\n    # TODO: costruire un buon risolutore di espressioni regolari per javascript\n    return pattern\n\nclass ValidatorSerializer:\n    def __init__(self, validators):\n\n        self._serializers = {}\n\n        for validator in validators:\n            validator_name = type(validator).__name__\n            validator_method = getattr(self,\'serialize_%s\' % validator_name,None)\n            if validator_method:\n                self._serializers.update(validator_method(validator, **self._serializers))\n\n    def serialize_IS_LENGTH(self, validator, minlength = 0, maxlength = 2**32):\n        return dict(\n            minlength = max(minlength, validator.minsize),\n            maxlength = min(maxlength, validator.maxsize),\n        )\n\n    def serialize_IS_INT_IN_RANGE(self,validator,min=0, max=2**32, **kwargs):\n        return dict(\n            min = mmax(min, validator.minimum),\n            max = mmin(max, validator.maximum),\n        )\n\n    def serialize_IS_NOT_EMPTY(self,validator, required=False, **kwargs):\n        return dict(required = True)\n\n    def serialize_IS_MATCH(self,validator,pattern = \'\',**kwargs):\n        return dict(pattern=(\'(%s)|(%s)\' % (regex2js(validator.regex.pattern),pattern)) if pattern else regex2js(validator.regex.pattern))\n\n    def serialize_IS_ALPHANUMERIC(self,validator,pattern=\'\',**kwargs):\n        return self.serialize_IS_MATCH(validator, pattern)\n\n    def __call__(self):\n        return self._serializers\n\n@jsoned\ndef model():\n    if not request.args:\n        raise Message(\'you have to specify a model like by /%s/plugin_angular/model/<model_name>\' % request.application)\n    if not request.args[0] in db:\n        raise Message(\'model %s not found on %s application\' % (request.args[0],request.application))\n    model = db[request.args[0]]\n    return dict((field.name,dict(\n        name = field.label,\n        validators = ValidatorSerializer(field.requires if isSequenceType(field.requires) else [field.requires])(),\n        comment = field.comment,\n        readable = field.readable,\n        writable = field.writable,\n        type = field.type.split(\'(\')[0],\n        w2pwidget = field.widget,\n    )) for field in (\n        getattr(model,field)\n        for field in model.fields\n    ))\n\n@jsoned\ndef query():\n    model = db.__dict__[request.vars.model]\n    fields = [model[field_name] for field_name in request.vars.fields] if \'fields\' in request.vars else model.ALL\n    return db().select(fields)\nresponse._vars=response._caller(query)\n'
+p7
+sS'snapshot'
+p8
+(dp9
+sS'traceback'
+p10
+S'Traceback (most recent call last):\n  File "/Users/nihil/PycharmProjects/untitled/web2py/gluon/restricted.py", line 224, in restricted\n    exec ccode in environment\n  File "/Users/nihil/PycharmProjects/untitled/web2py/applications/ang2py/controllers/plugin_angular.py", line 78, in <module>\n  File "/Users/nihil/PycharmProjects/untitled/web2py/gluon/globals.py", line 393, in <lambda>\n    self._caller = lambda f: f()\n  File "applications/ang2py/modules/plugin_angular.py", line 30, in x\n    raise e\nAttributeError: \'Table\' object has no attribute \'username\'\n'
+p11
+s.

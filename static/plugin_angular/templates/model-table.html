@@ -1,0 +1,34 @@
+<form name="{* model_name *}" novalidate ng-submit="senddata(obj)" >
+    <table class="table table-striped">
+        <tr ng-repeat="field in showFields" ng-show="field.writable">
+            <td>
+                <label for="{* field.id *}">{* field.name *}</label>
+            </td>
+            <td>
+                <span ng-if="edit && !field.template">
+                    <input
+                        title="{* field.comment *}"
+                        type="{* field.atype *}"
+                        ng-model="obj[field.id]"
+                        placeholder="{* field.name *}"
+                        ng-required="(field.type != 'boolean') && field.validators.required"
+                        ng-minlength="field.validators.minlength"
+                        ng-maxlength="field.validators.maxlength"
+                        ng-pattern="field.validators.pattern"
+                        min="{* field.validators.min?field.validators.min:0 *}"
+                        max="{* field.validators.max?field.validators.max:'' *}"
+                    />
+                </span>
+                <span ng-if="edit && field.template" ng-include="'/' + options.application + '/static/plugin_angular/templates/fields/' + field.template + '.html'">TEMPLATE</span>
+                <span ng-if="!edit">
+                    {* obj.value *}
+                </span>
+            </td>
+        </tr>
+        <tr ng-show="showOk">
+            <td></td>
+            <td><input type="submit" value="Ok" class="btn btn-success"/> </td>
+        </tr>
+    </table>
+</form>
+<span class="fa fa-refresh fa-spin fa-3x" ng-show="waiting"></span>

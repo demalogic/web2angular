@@ -1,0 +1,19 @@
+<span ng-if="edit">
+    <input
+        type="text"
+        ng-model="obj[field.id]"
+        placeholder="field.name"
+        ng-required="field.validators.requred"
+        ng-minlength="field.validators.minlength"
+        ng-maxlength="field.validators.maxlength"
+        ng-pattern="field.validators.pattern"
+    />
+    <ul>
+        <li ng-repeat="(a,b) in field">
+            {* a *} : {* b *}
+        </li>
+    </ul>
+</span>
+<span ng-if="!edit">
+    {* obj.value *}
+</span>

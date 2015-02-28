@@ -1,0 +1,5 @@
+<w2p-data resource="{* field.reference *}">
+    <select name="{* field.id *}" ng-model="obj[field.id]">
+        <option ng-repeat="item in items" value="{* item.id *}">{* field.represent(field,item) *}</option>
+    </select>
+</w2p-data>

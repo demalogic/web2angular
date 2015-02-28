@@ -45,6 +45,9 @@ class ResourceManager(object):
             cls._instance = object.__new__(cls)
         return cls._instance
 
+    def get_resources(self):
+        return self.__resources.keys()
+
     def register(self,resource, name):
         self.__resources[name] = resource
 #
@@ -62,17 +65,34 @@ for func_name in ('get','put','post','delete'):
 
 
 class TableResource(Resource):
+    doc = None
+
     def __init__(self, table):
         super(TableResource,self).__init__(table._tablename)
         self.table = table
+        self.__doc__ = self.table._tablename
+        self.name = self.__doc__ = self.table._tablename
 
     def get(self,id):
+        """
+        fetch a single object from table identifyed by ID
+        """
         return self.table(id)
 
     def list(self,fields = None, selection= None):
+        """
+        Fetch a list of resource and return generic description of items
+        """
         if fields:
             fields = tuple(self.table[field_name] for field_name in fields)
-        return dict(items = self.table._db().select(*(fields or [self.table.ALL])))
+        query = None
+        if selection:
+            query = self.table.id > 0
+        records = self.table._db(query).select(*(fields or [self.table.ALL]))
+        return dict(
+            results = records,
+            totalResults = len(records),
+        )
 
     def put(self,multiple = None,**kwargs):
         if 'id' in kwargs:
@@ -85,8 +105,59 @@ class TableResource(Resource):
             return ret
         return self.table[ret.id]
 
+    def describe(self):
+        model = self.table
+        return dict(
+            fields = dict((field.name,dict(
+                name = field.label,
+                validators = ValidatorSerializer(field.requires if isSequenceType(field.requires) else [field.requires])(),
+                comment = field.comment,
+                readable = field.readable,
+                writable = field.writable,
+                type = field.type.split('(')[0],
+                w2pwidget = field.widget,
+            )) for field in (
+                getattr(model,field)
+                for field in model.fields
+            )
+            if field.readable or field.writable),
+            doc = self.doc or self.__doc__,
+        )
+
     def delete(self,id=None, **kwargs):
         return self.table._db(self.table.id == id).delete()
+
+
+class MasterResource(Resource):
+    """
+    Manage all resources
+    """
+    def __init__(self):
+        super(MasterResource,self).__init__('resources')
+        self.name = 'Resource'
+
+    def get(self,resource_name):
+        # getting resource
+        resource = ResourceManager().resource(resource_name)
+        if resource:
+            #build return dictionary
+            return dict(
+                name = resource.name,
+                doc = resource.__doc__,
+                methods = tuple(
+                    dict(
+                        name = method_name,
+                        doc = method.__doc__,
+                    )
+                    for method_name, method in resource.__dict__.iteritems() if isCallable(method)
+                )
+            )
+        raise HTTP(404, 'resource known as %s not found on this server' % resource_name)
+
+    def list(self):
+        return ResourceManager().get_resources()
+
+MasterResource()
 
 
 class ValidatorSerializer:
@@ -121,6 +192,10 @@ class ValidatorSerializer:
 
     def serialize_IS_ALPHANUMERIC(self,validator,pattern='',**kwargs):
         return self.serialize_IS_MATCH(validator, pattern)
+
+    def serialize_IS_IN_DB(self,validator,reference=''):
+        return dict(reference = validator.label)
+
 
     def __call__(self):
         return self._serializers

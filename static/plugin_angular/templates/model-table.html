@@ -1,11 +1,12 @@
-<form name="{* model_name *}" novalidate ng-submit="senddata(obj)" >
+<span class="fa fa-refresh fa-spin fa-3x" ng-show="waiting"></span>
+<form name="{* model_name *}" novalidate ng-submit="senddata(obj)">
     <table class="table table-striped">
-        <tr ng-repeat="field in showFields" ng-show="field.writable">
+        <tr ng-repeat="field in showFields" ng-if="field.writable">
             <td>
                 <label for="{* field.id *}">{* field.name *}</label>
             </td>
             <td>
-                <span ng-if="edit && !field.template">
+                <span ng-show="edit && !field.template">
                     <input
                         title="{* field.comment *}"
                         type="{* field.atype *}"
@@ -20,15 +21,14 @@
                     />
                 </span>
                 <span ng-if="edit && field.template" ng-include="'/' + options.application + '/static/plugin_angular/templates/fields/' + field.template + '.html'">TEMPLATE</span>
-                <span ng-if="!edit">
-                    {* obj.value *}
+                <span ng-hide="edit">
+                    {* obj[field.id] *}
                 </span>
             </td>
         </tr>
-        <tr ng-show="showOk">
+        <tr ng-show="showOk && edit">
             <td></td>
             <td><input type="submit" value="Ok" class="btn btn-success"/> </td>
         </tr>
     </table>
 </form>
-<span class="fa fa-refresh fa-spin fa-3x" ng-show="waiting"></span>

@@ -19,42 +19,36 @@ input.ng-invalid {
     width: 10px;
     height: 10px;
 }
-td<input {
-    background: red;
-}
-
 </style>
-<script type="text/ng-template" id="prova.html">
-    <ul>
-        <li ng-repeat="item in items">
-            {* item *}
-        </li>
-    </ul>
-</script>
-
-<div ng-controller="demoCtrl">
-    <modelform
-        model="person"
-        new
-        on-submit="personCreated">
-    </modelform>
-
-    <span>{* person *}</span>
-    <p>{* waiting *}</p>
-    <h2>lista delle persone note</h2>
-    <w2pdata
-        resource="person"
-        >
-            <table class="table table-striped">
-                <tr ng-repeat="item in items" ng-click="select(item)">
-                    <td ng-repeat="field in fields">
-                        {* item[field] *}
-                    </td>
-                    <td>
-                        <span class="btn btn-danger" ng-click="ask('sicuro di voler eliminare ' + item.first_name + '?')&& $delete(item)">Elimina</span>
-                    </td>
-                </tr>
-            </table>
-    </w2pdata>
-</div>
-
+<w2p-resource-form resource="pet" new></w2p-resource-form>
+<w2p-resource-form resource="person" new></w2p-resource-form>
+<table>
+    <tr>
+        <td>
+            <w2p-data resource="pet">
+                <table class="table table-striped">
+                    <tr ng-repeat="pet in items">
+                        <td>{* pet.name *}</td>
+                        <td>{* pet.pet_owner *}</td>
+                        <td>
+                            <span ng-click="$deletePet(pet)" class="btn">delete</span>
+                        </td>
+                    </tr>
+                </table>
+            </w2p-data>
+        </td>
+        <td>
+            <w2p-data resource="person">
+                <table class="table table-striped">
+                    <tr ng-repeat="p in items">
+                        <td>{* p.first_name *}</td>
+                        <td>{* p.last_name *}</td>
+                        <td>
+                            <span ng-click="$selectPerson(p)" class="btn">select</span>
+                        </td>
+                    </tr>
+                </table>
+            </w2p-data>
+        </td>
+    </tr>
+</table>

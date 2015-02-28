@@ -72,86 +72,114 @@ var AJS2W2P_TYPES_TEMPLATE = {
         this.get = this.post;
     });
 
-    app.controller('menu', function($scope, $rootScope, $http){
-        $rootScope.menu = $scope;
-        $scope.menuitems = [];
-
-        $http.get('/' + $rootScope.options.application + '/default/menu')
-            .success(function(data,status,evt,xhr){
-                $scope.menuitems = data.menu;
-                $scope.idxItems = {};
-                for (i in $scope.menuitems){
-                    item = $scope.menuitems[i];
-                    $scope.idxItems[item.id] = item;
-                }
-                $scope.idxItems[data.active].active = true;
+    app.service('w2pResources',function($http,$rootScope,$modal){
+        //this.resourceCache = {};
+        var W2PBASE_REST_URL = '/ang2py/plugin_angular/restful/';
+        var MANAGEERROR = function(data){
+            instance = $modal.open({
+                templateUrl: '/' + $rootScope.options.application + '/static/plugin_angular/templates/' + ((status==512)?'message.html':'error.html'),
+                size: 'lg',
+                controller: function ($modal, $scope) {
+                    if (status == 512){
+                        mex = data.split('\n');
+                        $scope.title = mex[0];
+                        $scope.message = mex[1];
+                    } else {
+                        try {
+                            if ('traceback' in data) {
+                                $scope.traceback = data.traceback;
+                                $scope.exception = data.exception;
+                            }
+                        } catch (e) {
+                            $scope.exception = 'Ticket';
+                            $scope.message = data;
+                        }
+                    }
+                    $scope.cancel = function () {
+                        $modal.instance.dismiss();
+                    };
+                },
+                controlerAs: 'ctrl'
             });
-
-        path = window.location.pathname;
-        for (item in $scope.menuitems)
-            if ($scope.menuitems[item].url == path)
-                $scope.menuitems[item].active = true;
-
-        $scope.select = function(item_id){
-            item = $scope.idxItems[item_id];
-            for (it in $scope.menuitems)
-                $scope.menuitems[it].active = (item == $scope.menuitems[it])
-            $rootScope.activePage = item;
-            $http.get('/' + $rootScope.options.application + '/default/last_menu/' + item.id)
+            $modal.instance = instance;
         };
-        $scope.ricerca = function(x){
-            $scope.termine = '';
-            $rootScope.searcher.advancedSearch.fullText = x;
-            $rootScope.searcher.searching.fullText = x;
-            $rootScope.searcher.ricerca();
-        }
-
+        var W2P_POST = function (resource,method,data,success){
+            $http.post(W2PBASE_REST_URL + resource + '/' + method,data,{cache : true})
+                .success(function(data) {
+                    success.apply(this, [data]);
+                })
+                .error(function(data){
+                    MANAGEERROR(data);
+                });
+        };
+        this.describe = function(resourceName, callBack){    // direct callback
+            W2P_POST(resourceName,'describe',{},function(data){
+                callBack.apply(this,[data.fields,data.doc]);
+            });
+        };
+        this.list = function(resourceName,options){  //
+            W2P_POST(resourceName,'list',options,function(data){
+               $rootScope.$broadcast('items-' + resourceName, data.results,data.totalResults,options);
+            });
+        };
+        this.put = function(resourceName,item, callBack){
+            W2P_POST(resourceName,'put',item,function(data){
+                $rootScope.$broadcast('item-updated-' + resourceName, data);
+                callBack.apply(this,[data]);
+            });
+        };
+        this.get = function(resourceName,id){
+            W2P_POST(resourceName,'get/' + id,{},function(data){
+               $rootScope.$broadcast('item-updated-' + resourceName, data);
+            });
+        };
+        this.del = function(resourceName, id){
+            W2P_POST(resourceName,'delete/' + id,{},function(data){
+               $rootScope.$broadcast('item-deleted-' + resourceName, id);
+            });
+        };
     });
 
-    app.directive('modelform', function(w2p) {
-        if (!('modelCache' in w2p)){
-            w2p.modelCache = {};
-        }
-        var controller = function(w2p,$scope, $compile, $http,$templateCache, $controller, $parse) {
-            $scope.w2p = w2p;
+    app.directive('w2pResourceForm', function(w2pResources) {
+        var controller = function(w2pResources,$scope, $compile, $http,$templateCache, $controller, $parse) {
             $scope.http = $http;
             $scope.templateCache = $templateCache;
             $scope.controller = $controller;
             $scope.compile = $compile;
             $scope.$parent.waiting = true;
             $scope.parse = $parse;
-            $scope.senddata = function(obj){
-                form = $scope[$scope.model_name];
-                if (form.$dirty && form.$valid) {
-                    for (f in $scope.fixedFields){
-                        obj[f] = $scope.fixedFields[f];
-                    }
-                    w2p.post($scope.w2pfunc, obj)
-                        .success(function (a, b, c, d) {
-                            if ($scope.$parent[$scope.cb]) {
-                                if (($scope.model_name + '_items') in $scope.$parent) {
-                                    items = $scope.$parent[$scope.model_name + '_items'].filter(function(x){return x.id != a.id});
-                                    items.push(a)
-                                    $scope.$parent[$scope.model_name + '_items'] = items;
-                                }
-                                $scope.$parent[$scope.cb].apply(this, [a, b, c, d]);
-                            }
-                            $scope.obj = {};
-                        })
-                }
-            };
+            $scope.w2presources = w2pResources;
         };
         return {
             controller : controller,
             scope : true,
             restrict: 'E',
             link: function (scope, element, attrs) {
-                scope.model_name = attrs.model;
+                // initialization
+                scope.resourceName = attrs.resource;
                 scope.edit = ('edit' in attrs) || ('new' in attrs);
                 scope.tpl = attrs.template?attrs.template:'/' + scope.$root.options.application + '/static/plugin_angular/templates/model-table.html';
-                scope.w2pfunc = attrs.function?attrs.function:'plugin_angular/restful/' + scope.model_name + '/put';
-                scope.cb = attrs.onSubmit;
+                scope.onSubmit = attrs.onSubmit?scope.parse(attrs.onSubmit):undefined;
                 scope.hiddenFields = {};
+
+                // attaching events
+                scope.$on('select-' + scope.resourceName,function(evt,item){
+                    scope.obj = {};
+                    for (f in item){
+                        scope.obj[f] = item[f];
+                    }
+                });
+
+                scope.$parent['$set' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
+                    scope.$root.$broadcast('select-' + scope.resourceName,item);
+                };
+                scope.$parent['$edit' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(val){
+                    if (val!=undefined  )
+                        scope.edit = val;
+                    return scope.edit;
+                };
+
+                // enhanced initialization
                 if (attrs.hiddenFields){
                     hf = attrs.hiddenFields.split(',');
                     for (f in hf) scope.hiddenFields[hf[f]] = true;
@@ -160,8 +188,7 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     scope.showOk = attrs.showOk ? scope.parse(attrs.showOk)(scope.$parent) : true;
                 } catch (e){scope.showOk = true}
                 scope.fixedFields = attrs.fixedFields?scope.parse(attrs.fixedFields)(scope.$parent):{};
-                scope.gotModel = function(data){
-                    scope.w2p.modelCache[scope.model_name] = data;
+                scope.gotModel = function(data,doc){
                     // INITIALIZATION
                     scope.obj = {};
                     scope.model = data;
@@ -188,16 +215,34 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     // better defining fields
                     for (f in scope.model){
                         field = scope.model[f];
-                        if (field.type.slice(9) == 'reference'){
-                            field.atype = 'reference'
+                        if (field.type.slice(0,9) == 'reference'){
+                            field.reference = field.type.slice(10);
+                            field.type = 'reference';
+                            // decoding python format %(<field_name>)s expression
+                            ref_table_fields = field.validators.reference;
+                            regex = /\%\((\S+)\)\w/
+                            if (regex.test(ref_table_fields)){
+                                referenced_fields = [];
+                                i = 0;
+                                while (regex.test(ref_table_fields.slice(i))){
+                                    found = regex.exec(ref_table_fields.slice(i))[1];
+                                    referenced_fields.push(found);
+                                    i += found.length;
+                                }
+                                field.ref_fields = referenced_fields;
+                            } else {
+                                field.ref_fields = [ref_table_fields];
+                            }
+                            field.represent = function(field,item){
+                                ret = [];
+                                for (f in field.ref_fields){
+                                    ret.push(item[field.ref_fields[f]]);
+                                }
+                                return ret.join(' ');
+                            }
                         }
                         field.atype = AJS2W2P_TYPES[field.type];
                         field.template = AJS2W2P_TYPES_TEMPLATE[field.type];
-
-                        // generating all field widgets
-                        //for (f in scope.model) {
-                        //    scope.model[f].widget = scope.buildWidget(scope.model[f]);
-                        //}
                     }
                     // creating new scope and template
                     scope.http.get( scope.tpl, { cache: scope.templateCache } )
@@ -208,61 +253,54 @@ var AJS2W2P_TYPES_TEMPLATE = {
                             element.html( response.data );
                             element.children().data('$ngControllerController', templateCtrl);
                             scope.compile( element.contents() )( templateScope );
+                            // stop waiting widget
+                            scope.$parent.waiting = false;
                         });
-                    // put model reference to scope with its name
-                    if (!(scope.model_name in scope.$parent)){
-                        scope.$parent[scope.model_name] = scope.obj;
-                    }
-                    // stop waiting widget
-                    scope.$parent.waiting = false;
                 };
-                if (scope.model_name in scope.w2p.modelCache){
-                    scope.gotModel(scope.w2p.modelCache[scope.model_name]);
-                } else {
-                    w2p.get('plugin_angular/model/' + scope.model_name).success(scope.gotModel);
+                scope.w2presources.describe(scope.resourceName,scope.gotModel);
+                scope.senddata = function(obj){
+                    scope.w2presources.put(scope.resourceName,obj ,function(obj){
+                        if (scope.onSubmit)
+                            scope.onSubmit(scope.$parent);
+                    });
                 }
-                element.html('-- form model (<b>' + attrs.model + ')</b> --')
             }
         };
     });
 
-    app.directive('w2pdata',function(w2p){
+    app.directive('w2pData',function(w2p, w2pResources, $rootScope){
         return {
             scope : true,
             link : function(scope, element, attrs){
-                scope.resource = attrs.resource;
+                scope.resourceName = attrs.resource;
                 scope.selection = attrs.selection;
                 scope.fields = attrs.fields?attrs.fields.split(','):false;
-                scope.fetch = function(){
-                    kwargs = {};
-                    if (scope.fields)
-                        kwargs.fields = scope.fields;
-                    if (scope.selection)
-                        kwargs.selection = scope.selection;
-                    w2p.post('plugin_angular/restful/' + scope.resource + '/list',kwargs)
-                        .success(function(data){
-                            scope.items = data.items;
-                            try {
-                                row = scope.items[0];
-                                scope.fields = [];
-                                for (field in row){
-                                    scope.fields.push(field);
-                                }
-                            } catch (e){
-                                scope.fields = [];
-                            }
-                            scope.$parent[scope.resource + '_items'] = data.items;
-                        });
-
+                // attaching to events
+                scope.$on('items-' + scope.resourceName,function(evt,results,numResults,options){
+                    scope.items = results;
+                });
+                scope.$on('item-updated-' + scope.resourceName,function(evt,data,options){
+                    r = true;
+                    for(i = 0;r && (i < scope.items.length);i ++){
+                        if (scope.items[i].id == data.id){
+                            r = false;
+                            scope.items[i] = data;
+                        }
+                    }
+                    if (r){
+                        scope.items.push(data);
+                    }
+                });
+                scope.$on('item-deleted-' + scope.resourceName,function(evt,id){
+                    scope.items = scope.items.filter(function(x){return x.id != id});
+                });
+                w2pResources.list(scope.resourceName,{});
+                scope.$parent['$delete' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
+                    w2pResources.del(scope.resourceName,item.id);
                 };
-                scope.fetch();
-                scope.$delete = function(item){
-                    w2p.post('plugin_angular/restful/' + scope.resource + '/delete',{id : item.id})
-                        .success(function(data,a,b,c){
-                            scope.items = scope.items.filter(function(x){return x.id != item.id;});
-                            scope.$parent[scope.resource + '_items'] = scope.items;
-                        });
-                }
+                scope.$parent['$select' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
+                    $rootScope.$broadcast('select-' + scope.resourceName,item);
+                };
             }
         }
     });

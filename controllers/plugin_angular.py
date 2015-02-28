@@ -44,3 +44,20 @@ def restful():
         raise HTTP(404, 'method unknown')
     return method (*request.args,**request.vars)
 
+# @jsoned
+# def restful():
+#     # return BEAUTIFY(request)
+#     if len(request.args)<1:
+#         raise HTTP(401,'Resource not defined. please use /%s/%s/restful/<resource name>[/arguments]' % (request.application, request.controller))
+#     # get resource name and consume args
+#     resource_name = request.args.pop(0)
+#     # get method name and consume args
+#     method_name = request.env.request_method.lower()
+#     # fetching resource object
+#     resource = ResourceManager().resource(resource_name)
+#     if not resource:
+#         raise HTTP(404,'resource %s not found on this %s.' % (resource_name,request.application))
+#     method = getattr(resource,method_name,None)
+#     if not method:
+#         raise HTTP(404, 'method unknown')
+#     return method(*request.args,**request.vars)

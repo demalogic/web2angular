@@ -17,20 +17,6 @@ w2pApp = 'ang2py';
         };
     });
 
-    app.controller('demoCtrl',function($scope,$modal){
-        $scope.ask = function(text){
-            return confirm(text);
-        };
-        $scope.select = function(item){
-            for (f in item){
-                $scope.person[f] = item[f];
-            }
-        };
-        $scope.personCreated = function(data,a,c,b){
-            console.log(data);
-        };
-        $scope.$delete = function (item){
-            alert(item.id);
-        }
+    app.controller('demoCtrl',function($scope){
     });
 })();

@@ -74,7 +74,6 @@ var AJS2W2P_TYPES_TEMPLATE = {
 
     app.service('w2pResources',function($http,$rootScope,$modal){
         //this.resourceCache = {};
-        var W2PBASE_REST_URL = '/ang2py/plugin_angular/restful/';
         var MANAGEERROR = function(data){
             instance = $modal.open({
                 templateUrl: '/' + $rootScope.options.application + '/static/plugin_angular/templates/' + ((status==512)?'message.html':'error.html'),
@@ -104,7 +103,7 @@ var AJS2W2P_TYPES_TEMPLATE = {
             $modal.instance = instance;
         };
         var W2P_POST = function (resource,method,data,success){
-            $http.post(W2PBASE_REST_URL + resource + '/' + method,data,{cache : true})
+            $http.post('/' + $rootScope.options.application + '/plugin_angular/restful/' + resource + '/' + method,data,{cache : true})
                 .success(function(data) {
                     success.apply(this, [data]);
                 })
@@ -112,20 +111,101 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     MANAGEERROR(data);
                 });
         };
+        var W2PRESOURCE = this;
+        this.descriptionCache = {};
         this.describe = function(resourceName, callBack){    // direct callback
-            W2P_POST(resourceName,'describe',{},function(data){
-                callBack.apply(this,[data.fields,data.doc]);
-            });
+            ret = W2PRESOURCE.descriptionCache[resourceName];
+            if (ret){
+                callBack.apply(this,ret);
+            } else {
+                W2P_POST(resourceName, 'describe', {}, function (data) {
+                    doc = data.doc;
+                    represents_as = data.representation;
+                    data = data.fields;
+                    for (f in data) {
+                        field = data[f];
+                        if (field.type.slice(0, 9) == 'reference') {
+                            field.reference = field.type.slice(10);
+                            field.type = 'reference';
+                            // decoding python format %(<field_name>)s expression
+                            ref_table_fields = field.validators.reference;
+                            regex = /\%\((\S+)\)\w/
+                            if (regex.test(ref_table_fields)) {
+                                referenced_fields = [];
+                                i = 0;
+                                while (regex.test(ref_table_fields.slice(i))) {
+                                    found = regex.exec(ref_table_fields.slice(i))[1];
+                                    referenced_fields.push(found);
+                                    i += found.length + 4;
+                                }
+                                field.ref_fields = referenced_fields;
+                            } else {
+                                field.ref_fields = [ref_table_fields];
+                            }
+                            //field.represent = function (field, item) {
+                            //    ret = [];
+                            //    for (ff in field.ref_fields) {
+                            //        ret.push(item[field.ref_fields[ff]]);
+                            //    }
+                            //    return ret.join(' ');
+                            //}
+                        }
+                    }
+                    W2PRESOURCE.descriptionCache[resourceName] = [data,represents_as,doc];
+                    W2PRESOURCE.describe(resourceName,callBack);
+                });
+            }
         };
         this.list = function(resourceName,options){  //
             W2P_POST(resourceName,'list',options,function(data){
-               $rootScope.$broadcast('items-' + resourceName, data.results,data.totalResults,options);
+                // if a list contains other table references it will be spared.
+                W2PRESOURCE.describe(resourceName,function(fields, representation){
+                    results = data.results;
+                    references = data.references;
+                    // indexing references by its ID
+                    data.references = {};
+                    for (tabName in references) {
+                        tab = references[tabName];
+                        data.references[tabName] = {};
+                        for (r in tab){
+                            row = tab[r];
+                            data.references[tabName][row.id] = row;
+                        }
+                    }
+                    // considering all reference from this model and try to create representing string
+                    // and translate all external fields to its representing string
+                    for (f in fields){
+                        field = fields[f];
+                        if (field.type == 'reference'){
+                            for (r in results){
+                                row = results[r];
+                                row['_' + f] = references[field.reference][row[f]];
+                            }
+                        }
+                    }
+                    //for (r in results){
+                    //    repr = [];
+                    //    for (f in representation){
+                    //        repr.push(results[r][representation[f]]);
+                    //    }
+                    //    results[r]._representsAs = repr.join(' ');
+                    //}
+                    $rootScope.$broadcast('items-' + resourceName, data.results,data.totalResults,options);
+                });
             });
         };
         this.put = function(resourceName,item, callBack){
             W2P_POST(resourceName,'put',item,function(data){
-                $rootScope.$broadcast('item-updated-' + resourceName, data);
-                callBack.apply(this,[data]);
+                //W2PRESOURCE.describe(resourceName,function(fields, representation) {
+                //    for (f in fields){
+                //        if (fields[f].type == 'reference'){
+                //            data._representsAs = fields[f].represent(fields[f])
+                //        }
+                //    }
+                    $rootScope.$broadcast('item-updated-' + resourceName, data);
+                    $rootScope.$broadcast('reference-updated-' + resourceName,{id : data.id, _representsAs : data._representsAs});
+                    callBack.apply(this, [data]);
+                //});
             });
         };
         this.get = function(resourceName,id){
@@ -166,7 +246,9 @@ var AJS2W2P_TYPES_TEMPLATE = {
                 scope.$on('select-' + scope.resourceName,function(evt,item){
                     scope.obj = {};
                     for (f in item){
-                        scope.obj[f] = item[f];
+                        if (f[0] != '_') {
+                            scope.obj[f] = item[f];
+                        }
                     }
                 });
 
@@ -215,32 +297,32 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     // better defining fields
                     for (f in scope.model){
                         field = scope.model[f];
-                        if (field.type.slice(0,9) == 'reference'){
-                            field.reference = field.type.slice(10);
-                            field.type = 'reference';
-                            // decoding python format %(<field_name>)s expression
-                            ref_table_fields = field.validators.reference;
-                            regex = /\%\((\S+)\)\w/
-                            if (regex.test(ref_table_fields)){
-                                referenced_fields = [];
-                                i = 0;
-                                while (regex.test(ref_table_fields.slice(i))){
-                                    found = regex.exec(ref_table_fields.slice(i))[1];
-                                    referenced_fields.push(found);
-                                    i += found.length;
-                                }
-                                field.ref_fields = referenced_fields;
-                            } else {
-                                field.ref_fields = [ref_table_fields];
-                            }
-                            field.represent = function(field,item){
-                                ret = [];
-                                for (f in field.ref_fields){
-                                    ret.push(item[field.ref_fields[f]]);
-                                }
-                                return ret.join(' ');
-                            }
-                        }
+                        //if (field.type.slice(0,9) == 'reference'){
+                        //    field.reference = field.type.slice(10);
+                        //    field.type = 'reference';
+                        //    // decoding python format %(<field_name>)s expression
+                        //    ref_table_fields = field.validators.reference;
+                        //    regex = /\%\((\S+)\)\w/
+                        //    if (regex.test(ref_table_fields)){
+                        //        referenced_fields = [];
+                        //        i = 0;
+                        //        while (regex.test(ref_table_fields.slice(i))){
+                        //            found = regex.exec(ref_table_fields.slice(i))[1];
+                        //            referenced_fields.push(found);
+                        //            i += found.length + 4;
+                        //        }
+                        //        field.ref_fields = referenced_fields;
+                        //    } else {
+                        //        field.ref_fields = [ref_table_fields];
+                        //    }
+                        //    field.represent = function(field,item){
+                        //        ret = [];
+                        //        for (f in field.ref_fields){
+                        //            ret.push(item[field.ref_fields[f]]);
+                        //        }
+                        //        return ret.join(' ');
+                        //    }
+                        //}
                         field.atype = AJS2W2P_TYPES[field.type];
                         field.template = AJS2W2P_TYPES_TEMPLATE[field.type];
                     }
@@ -268,7 +350,7 @@ var AJS2W2P_TYPES_TEMPLATE = {
         };
     });
 
-    app.directive('w2pData',function(w2p, w2pResources, $rootScope){
+    app.directive('w2pData',function(w2p, w2pResources, $rootScope, $parse,$filter){
         return {
             scope : true,
             link : function(scope, element, attrs){
@@ -277,24 +359,59 @@ var AJS2W2P_TYPES_TEMPLATE = {
                 scope.fields = attrs.fields?attrs.fields.split(','):false;
                 // attaching to events
                 scope.$on('items-' + scope.resourceName,function(evt,results,numResults,options){
-                    scope.items = results;
+                    if (options == scope.opts)
+                        scope.items = results;
                 });
                 scope.$on('item-updated-' + scope.resourceName,function(evt,data,options){
+                    // update element if present
                     r = true;
-                    for(i = 0;r && (i < scope.items.length);i ++){
-                        if (scope.items[i].id == data.id){
+                    for (i = 0; r && (i < scope.items.length); i++) {
+                        if (scope.items[i].id == data.id) {
                             r = false;
                             scope.items[i] = data;
                         }
                     }
-                    if (r){
+                    // else add new one
+                    if (r) {
                         scope.items.push(data);
+                    }
+                    // finally apply filter if present
+                    for (f in scope.opts.filter){
+                        scope.items = scope.items.filter(function(x){return x[f] == scope.opts.filter[f]});
                     }
                 });
                 scope.$on('item-deleted-' + scope.resourceName,function(evt,id){
                     scope.items = scope.items.filter(function(x){return x.id != id});
                 });
-                w2pResources.list(scope.resourceName,{});
+                // attaching to reference events
+                w2pResources.describe(scope.resourceName,function(fields){
+                   for (f in fields){
+                       if (fields[f].type == 'reference'){
+                           console.log('reference-updated-' + fields[f].reference + ' to ' + scope.resourceName);
+                           scope.$on('reference-updated-' + fields[f].reference,function(evt,ref){
+                               for (i in scope.items){
+                                   item = scope.items[i];
+                                   for (f in fields){
+                                       field = fields[f];
+                                       if (item[f] == ref.id){
+                                           item['_' + f] = ref._representsAs;
+                                       }
+
+                                   }
+                               }
+                           });
+                       }
+                   }
+                });
+                options = {};
+                if ('fields' in attrs){
+                    options.fields = attrs.fields.split(',');
+                }
+                if ('filter' in attrs){
+                    options.filter = $parse(attrs.filter)(scope.$parent);
+                }
+                scope.opts = options;
+                w2pResources.list(scope.resourceName,scope.opts);
                 scope.$parent['$delete' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
                     w2pResources.del(scope.resourceName,item.id);
                 };

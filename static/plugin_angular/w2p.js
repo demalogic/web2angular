@@ -102,13 +102,19 @@ var AJS2W2P_TYPES_TEMPLATE = {
             });
             $modal.instance = instance;
         };
-        var W2P_POST = function (resource,method,data,success){
+        var W2P_POST = function (resource,method,data,success,scope){
+            if (scope)
+                scope.WW = true;
             $http.post('/' + $rootScope.options.application + '/plugin_angular/restful/' + resource + '/' + method,data,{cache : true})
                 .success(function(data) {
                     success.apply(this, [data]);
+                    if(scope)
+                        scope.WW = false;
                 })
                 .error(function(data){
                     MANAGEERROR(data);
+                    if(scope)
+                        scope.waiting = false;
                 });
         };
         var W2PRESOURCE = this;
@@ -156,7 +162,7 @@ var AJS2W2P_TYPES_TEMPLATE = {
                 });
             }
         };
-        this.list = function(resourceName,options){  //
+        this.list = function(resourceName,options,scope){  //
             W2P_POST(resourceName,'list',options,function(data){
                 // if a list contains other table references it will be spared.
                 W2PRESOURCE.describe(resourceName,function(fields, representation){
@@ -177,9 +183,12 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     for (f in fields){
                         field = fields[f];
                         if (field.type == 'reference'){
-                            for (r in results){
-                                row = results[r];
-                                row['_' + f] = references[field.reference][row[f]];
+                            ref = references[field.reference]
+                            if (ref) {
+                                for (r in results) {
+                                    row = results[r];
+                                    row['_' + f] = ref[row[f]];
+                                }
                             }
                         }
                     }
@@ -192,9 +201,9 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     //}
                     $rootScope.$broadcast('items-' + resourceName, data.results,data.totalResults,options);
                 });
-            });
+            },scope);
         };
-        this.put = function(resourceName,item, callBack){
+        this.put = function(resourceName,item, callBack,scope){
             W2P_POST(resourceName,'put',item,function(data){
                 //W2PRESOURCE.describe(resourceName,function(fields, representation) {
                 //    for (f in fields){
@@ -206,18 +215,20 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     $rootScope.$broadcast('reference-updated-' + resourceName,{id : data.id, _representsAs : data._representsAs});
                     callBack.apply(this, [data]);
                 //});
-            });
+            },scope);
         };
-        this.get = function(resourceName,id){
+        this.get = function(resourceName,id,scope){
             W2P_POST(resourceName,'get/' + id,{},function(data){
                $rootScope.$broadcast('item-updated-' + resourceName, data);
-            });
+            },scope);
         };
-        this.del = function(resourceName, id){
+        this.del = function(resourceName, id,scope){
             W2P_POST(resourceName,'delete/' + id,{},function(data){
-               $rootScope.$broadcast('item-deleted-' + resourceName, id);
-            });
+                $rootScope.$broadcast('item-deleted-' + resourceName, id);
+                $rootScope.$broadcast('reference-deleted-' + resourceName, id);
+            },scope);
         };
+        this.custom = W2P_POST;
     });
 
     app.directive('w2pResourceForm', function(w2pResources) {
@@ -226,7 +237,7 @@ var AJS2W2P_TYPES_TEMPLATE = {
             $scope.templateCache = $templateCache;
             $scope.controller = $controller;
             $scope.compile = $compile;
-            $scope.$parent.waiting = true;
+            $scope.waiting = true;
             $scope.parse = $parse;
             $scope.w2presources = w2pResources;
         };
@@ -252,10 +263,10 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     }
                 });
 
-                scope.$parent['$set' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
+                scope['$set' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
                     scope.$root.$broadcast('select-' + scope.resourceName,item);
                 };
-                scope.$parent['$edit' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(val){
+                scope['$edit' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(val){
                     if (val!=undefined  )
                         scope.edit = val;
                     return scope.edit;
@@ -267,9 +278,9 @@ var AJS2W2P_TYPES_TEMPLATE = {
                     for (f in hf) scope.hiddenFields[hf[f]] = true;
                 } else {scope.hiddenFields = {id : true};}
                 try {
-                    scope.showOk = attrs.showOk ? scope.parse(attrs.showOk)(scope.$parent) : true;
+                    scope.showOk = attrs.showOk ? scope.parse(attrs.showOk)(scope) : true;
                 } catch (e){scope.showOk = true}
-                scope.fixedFields = attrs.fixedFields?scope.parse(attrs.fixedFields)(scope.$parent):{};
+                scope.fixedFields = attrs.fixedFields?scope.parse(attrs.fixedFields)(scope):{};
                 scope.gotModel = function(data,doc){
                     // INITIALIZATION
                     scope.obj = {};
@@ -336,22 +347,26 @@ var AJS2W2P_TYPES_TEMPLATE = {
                             element.children().data('$ngControllerController', templateCtrl);
                             scope.compile( element.contents() )( templateScope );
                             // stop waiting widget
-                            scope.$parent.waiting = false;
+                            scope.waiting = false;
                         });
                 };
                 scope.w2presources.describe(scope.resourceName,scope.gotModel);
                 scope.senddata = function(obj){
                     scope.w2presources.put(scope.resourceName,obj ,function(obj){
                         if (scope.onSubmit)
-                            scope.onSubmit(scope.$parent);
+                            scope.onSubmit(scope);
                     });
                 }
             }
         };
     });
 
-    app.directive('w2pData',function(w2p, w2pResources, $rootScope, $parse,$filter){
+    app.directive('w2pData',function(w2p, w2pResources, $rootScope, $parse,$compile){
         return {
+            controller : function($scope){
+                $scope.items = [];
+            },
+            restrict : 'E',
             scope : true,
             link : function(scope, element, attrs){
                 scope.resourceName = attrs.resource;
@@ -376,9 +391,10 @@ var AJS2W2P_TYPES_TEMPLATE = {
                         scope.items.push(data);
                     }
                     // finally apply filter if present
-                    for (f in scope.opts.filter){
-                        scope.items = scope.items.filter(function(x){return x[f] == scope.opts.filter[f]});
-                    }
+                    if ('filter' in scope.opts)
+                        for (f in scope.opts.filter){
+                            scope.items = scope.items.filter(function(x){return x[f] == scope.opts.filter[f]});
+                        }
                 });
                 scope.$on('item-deleted-' + scope.resourceName,function(evt,id){
                     scope.items = scope.items.filter(function(x){return x.id != id});
@@ -400,24 +416,52 @@ var AJS2W2P_TYPES_TEMPLATE = {
                                    }
                                }
                            });
+                           scope.$on('reference-deleted-' + fields[f].reference,function(evt,id){
+                               for (i in scope.items){
+                                   item = scope.items[i];
+                                   for (f in fields){
+                                       field = fields[f];
+                                       if (item[f] == id){
+                                           item['_' + f] = ' - ';
+                                       }
+
+                                   }
+                               }
+                           });
                        }
                    }
                 });
-                options = {};
-                if ('fields' in attrs){
-                    options.fields = attrs.fields.split(',');
-                }
-                if ('filter' in attrs){
-                    options.filter = $parse(attrs.filter)(scope.$parent);
-                }
-                scope.opts = options;
-                w2pResources.list(scope.resourceName,scope.opts);
+                scope.load = function(){
+                    options = {};
+                    if ('fields' in attrs){
+                        options.fields = attrs.fields.split(',');
+                    }
+                    if ('filter' in attrs){
+                        options.filter = $parse(attrs.filter)(scope);
+                        //console.log($compile(attrs.filter));
+                    }
+                    if ('withreferences' in attrs){
+                        options.withreferences = true;
+                    }
+                    scope.opts = options;
+                    w2pResources.list(scope.resourceName,scope.opts,scope);
+                };
                 scope.$parent['$delete' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
-                    w2pResources.del(scope.resourceName,item.id);
+                    w2pResources.del(scope.resourceName,item.id,scope);
                 };
                 scope.$parent['$select' + scope.resourceName[0].toUpperCase() + scope.resourceName.substring(1)] = function(item){
                     $rootScope.$broadcast('select-' + scope.resourceName,item);
+                    for (i in scope.items){
+                        if (scope.items[i]._selected)
+                            scope.items[i]._selected = false;
+                    }
+                    item._selected = true;
                 };
+                if ('filter' in attrs) {
+                    attrs.$observe('filter', scope.load);
+                } else {
+                    scope.load();
+                }
             }
         }
     });

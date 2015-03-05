@@ -3,9 +3,21 @@ __author__ = 'nihil'
 from gluon import *
 from gluon.serializers import json
 from operator import *
+from itertools import *
 import traceback, sys
 mmin = min
 mmax = max
+
+import re
+re_format_fields = re.compile('%\((\S+)\)\w')
+
+def field_from_format(tab):
+    """
+    find fields from format of a table and returns the list of fields who build it
+    :param tab: gluon.dal.Table object
+    :return: list o fields composing table format string
+    """
+    return itemgetter(*re_format_fields.findall(tab._format))(tab) + (tab.id,)
 
 class Message(Exception):
     def __init__(self,title,message = None):
@@ -77,21 +89,42 @@ class TableResource(Resource):
         """
         fetch a single object from table identifyed by ID
         """
-        return self.table(id)
+        ret = self.table(id)
+        ret._representsAs = self.table._format % ret
+        for field in self.table._references:
+            ref = field.referent
+            ret['_' + field.name] = ref.table._format % ref.table[ret[field.name]];
+        return ret
 
-    def list(self,fields = None, selection= None):
+    def list(self,fields = None, filter= None,withreferences=False):
         """
         Fetch a list of resource and return generic description of items
         """
+        print self.table._tablename, fields, filter
         if fields:
-            fields = tuple(self.table[field_name] for field_name in fields)
+            fields = set(self.table[field_name] for field_name in fields).difference((None,)).union(field_from_format(self.table))
         query = None
-        if selection:
-            query = self.table.id > 0
-        records = self.table._db(query).select(*(fields or [self.table.ALL]))
+        if filter:
+            query = reduce(and_,(self.table[field] == value for field,value in filter.iteritems()))
+        records = self.table._db(query).select(*(fields or (self.table.ALL,)))
+        for row in records:
+            row._representsAs = self.table._format % row
+        ref_tables = {}
+        for tab_ref in self.table._references:
+            ref_tables.setdefault(tab_ref.referent._table,set()).add(tab_ref)
+        if withreferences:
+            # referenced = tuple(a.referent for  a in  self.table._references)
+            referenced = tuple(x.referent for x in attrgetter(*self.table._fields)(self.table) if x.type.startswith('reference'))
+            references = dict(
+                (tab._tablename,dict((row.id,tab._format % row ) for row in self.table._db(tab.id.belongs(set(chain(*imap(records.column,field_names))).difference((None,)))).select(*field_from_format(tab))))
+                for tab,fields, field_names in ((k,v, map(attrgetter('name'),v)) for k,v in ref_tables.items())
+            )
+        else:
+            references = {}
         return dict(
             results = records,
             totalResults = len(records),
+            references = references,
         )
 
     def put(self,multiple = None,**kwargs):
@@ -103,7 +136,7 @@ class TableResource(Resource):
             ret = self.table.validate_and_insert(**kwargs)
         if ret.errors:
             return ret
-        return self.table[ret.id]
+        return self.get(ret.id)
 
     def describe(self):
         model = self.table
@@ -122,6 +155,7 @@ class TableResource(Resource):
             )
             if field.readable or field.writable),
             doc = self.doc or self.__doc__,
+            representation = re_format_fields.findall(model._format)
         )
 
     def delete(self,id=None, **kwargs):

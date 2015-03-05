@@ -25,14 +25,16 @@ input.ng-invalid {
 <table>
     <tr>
         <td>
-            <w2p-data resource="pet">
+            <w2p-data resource="pet" withreferences>
                 <table class="table table-striped">
                     <tr ng-repeat="pet in items">
                         <td>{* pet.name *}</td>
-                        <td>{* pet.pet_owner *}</td>
+                        <td>{* pet._pet_owner *}</td>
                         <td>
-                            <span ng-click="$deletePet(pet)" class="btn">delete</span>
+                            <span ng-click="$selectPet(pet)" class="btn">select</span>
+                            <span ng-click="$deletePet(pet)" class="btn btn-warning">delete</span>
                         </td>
+                        <td>{* pet.pet_owner *}</td>
                     </tr>
                 </table>
             </w2p-data>
@@ -41,10 +43,18 @@ input.ng-invalid {
             <w2p-data resource="person">
                 <table class="table table-striped">
                     <tr ng-repeat="p in items">
+                        <td>{* p._representsAs *}</td>
                         <td>{* p.first_name *}</td>
-                        <td>{* p.last_name *}</td>
+                        <td>
+                            <w2p-data resource="pet" filter="{pet_owner : {* p.id *} }">
+                                <ul>
+                                    <li ng-repeat="pet in items">{* pet.name *}</li>
+                                </ul>
+                            </w2p-data>
+                        </td>
                         <td>
                             <span ng-click="$selectPerson(p)" class="btn">select</span>
+                            <span ng-click="$deletePerson(p)" class="btn btn-danger">Delete</span>
                         </td>
                     </tr>
                 </table>

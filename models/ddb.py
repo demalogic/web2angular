@@ -26,18 +26,34 @@ base_table = db.Table(db,'tabella_base',
 
 db.define_table(
     'person',
-    base_table,
-    Field('first_name',length=12,label='Nome', requires=IS_NOT_EMPTY()),
+    # base_table,
+    Field('first_name',length=12,label='Nome pippo', requires=IS_NOT_EMPTY()),
     Field('last_name',length=12,label='Cognome', requires=IS_NOT_EMPTY()),
     Field('born','date',label='Data di nascita'),
-    represents='%(first_name)s %(last_name)s',
+    format='%(first_name)s %(last_name)s'
 )
 
 db.define_table('pet',
     Field('name',length=20,label=T('pet name')),
     Field('pet_owner',db.person,label=T('owner'),requires=IS_IN_DB(db,db.person.id,'%(first_name)s %(last_name)s')),
+    format='%(name)s'
 )
 
-from plugin_angular import TableResource
-TableResource(db.person)
-TableResource(db.pet)
+db.define_table('aa',
+    Field('x'),
+    format = '%(x)s',
+)
+
+db.define_table('bb',
+    Field('x'),
+    Field('aa',db.aa),
+    format = '%(x)s',
+)
+
+db.define_table('cc',
+    Field('x'),
+    Field('bb',db.bb),
+    Field('f',db.bb),
+    Field('vito',db.aa),
+    format = '%(x)s',
+)

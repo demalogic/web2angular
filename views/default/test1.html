@@ -1,0 +1,25 @@
+{{extend 'layout.html'}}
+
+<h1>{{=T('test %s') % 1}}</h1>
+
+<w2p-resource-form new resource="ABC"></w2p-resource-form>
+
+
+<w2p-data resource="ABC" withreference>
+    <table class="table table-striped">
+        <tr ng-repeat="item in items">
+            <td>{* item.x *}</td>
+            <td>
+                <ul>
+                    <li ng-repeat="i in item.cc_set">
+                        {* i.x *}
+                    </li>
+                </ul>
+            </td>
+            <td>
+                {* item._aa.x *}
+            </td>
+            <td><span class="btn" ng-click="$selectABC(item)">Select</span></td>
+        </tr>
+    </table>
+</w2p-data>

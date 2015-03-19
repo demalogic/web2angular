@@ -1,0 +1,72 @@
+{{ extend 'layout.html'}}
+
+<div ng-controller="test22">
+    <ul class="btn-group">
+        <li class="btn" ng-repeat="x in ['aa','bb','cc']" ng-click="call(x)">
+            {* x *}
+        </li>
+    </ul>
+    <div ng-if="vuoiAA">
+
+            <h1>AA</h1>
+            <ul>
+                {{for item in aa:}}
+                <li>
+                    {{= item.x }}
+                    <ul>
+                        {{for b in item.bb.select():}}
+                        <li>
+                            {{= b.x }}
+                            <ul>
+                                {{for c in b.cc.select():}}
+                                <li >
+                                    {{=c.x}}
+                                </li>
+                                {{pass}}
+                            </ul>
+                        </li>
+                        {{pass}}
+                    </ul>
+                    <ul style="color : red">
+                        {{ for vito in item.cc.select():}}
+                        <li >
+                            {{=db.cc._format % vito}}
+                        </li>
+                        {{pass}}
+                    </ul>
+                </li>
+                {{pass}}
+            </ul>
+
+    </div>
+    <div ng-if="vuoiBB">
+        <h1>BB</h1>
+            <ul>
+                {{for item in bb:}}
+                <li >
+                    {{= item.x }} {{= item.aa.x }}
+                    <ul>
+                        {{for b in  item.cc.select():}}
+                        <li >
+                            {{=b.x }}
+                        </li>
+                        {{pass}}
+                    </ul>
+                </li>
+                {{pass}}
+            </ul>
+    </div>
+    <div ng-if="vuoiCC">
+        <H1>CC</H1>
+            <ul>
+                {{for item in cc:}}
+                <li >
+                    {{= item.x }} ({{= item.bb.x }}) --> {{= item.bb.aa.x }}
+                    <span style="color:red">{{= item.vito.x }}</span>
+                </li>
+                {{pass}}
+            </ul>
+    </div>
+</div>
+
+

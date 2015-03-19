@@ -1,0 +1,517 @@
+(dp1
+S'output'
+p2
+S"<type 'exceptions.TypeError'> attribute name must be a string"
+p3
+sS'layer'
+p4
+S'/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/controllers/plugin_angular.py'
+p5
+sS'code'
+p6
+S'__author__ = \'nihil\'\n\nfrom plugin_angular import jsoned, Message, ResourceManager, ValidatorSerializer,Resource, TableResource\nfrom operator import *\nfrom itertools import *\n\n\nimport re\nre_format_fields = re.compile(\'%\\((\\S+)\\)\\w\')\n\ndef field_from_format(tab):\n    """\n    find fields from format of a table and returns the list of fields who build it\n    :param tab: gluon.dal.Table object\n    :return: list o fields composing table format string\n    """\n    fields = itemgetter(*re_format_fields.findall(tab._format))(tab)\n    if type(fields) is not tuple:\n        fields = (fields,)\n    return fields + (tab._id,)\n\ndef _is_many(join):\n    dest = join.first\n    condition = join.second\n    if condition.first.table == dest:\n        middle = condition.second\n    else:\n        middle = condition.first\n    return not middle.type.startswith(\'reference\')\n\ndef is_many(join):\n    """\n    Determine if a join chain represents a <to many> relation or not\n    :param join:\n    :return:\n    """\n    if type(join) not in (tuple,list):\n        join = [join]\n    return any(imap(_is_many,join))\n\nfrom functools import partial\nclass AggregateQueryResource(Resource):\n    def __init__(self,name,main_table,aggregate_joins, permissions={}, doc=\'\'):\n        """\n        Defines a Resource handler for join based aggregation\n        :param main_table: main entitiy table\n        :param aggregate_joins: list of join from main_table to aggregate table\n        """\n        DEFAULT_PERMISSIONS = dict(get=\'read\',list=\'read\',put=\'write\',delete=\'delete\')\n        super(AggregateQueryResource,self).__init__(name)\n        self.main_table = main_table\n        self.doc = doc or self.__doc__\n        self.aggregates = tuple(\n            (table,\n                join, # join to get single table\n                tuple(field for field in attrgetter(*table.fields)(table) if field.readable or field.writable), # useful fields from joined table\n                is_many(join), # check if is a many relation\n                join.second.first.name if join.second.first.table == self.main_table and not is_many(join) else join.second.second.name, # main table field who points on aggregates\n            ) for table,join in\n            ((join[-1].first if type(join) in (tuple,list) else join.first,join) for join in aggregate_joins) # splits each join to get (TABLE, and Join chain)\n        )\n\n        # storing many to many relations\n        self._many_to_many = dict(map(itemgetter(0,3),self.aggregates))\n\n        # excluding not managed fields (who is not readable nor writable)\n        self.default_fields = tuple(field for field in attrgetter(*self.main_table.fields)(self.main_table) if field.readable or field.writable)\n        # setting permissions to check for each method\n        self.permissions = DEFAULT_PERMISSIONS.copy()\n        self.permissions.update(permissions)\n\n        # creating references user can ask for by withreference option\n        self.ref_tables = {}\n        for tab_ref in self.main_table._references:\n            if tab_ref.readable or tab_ref.writable:\n                self.ref_tables.setdefault(tab_ref.referent._table,set()).add(tab_ref)\n\n        # removing references where are aggregates references to the same model\n        for model in map(itemgetter(0),self.aggregates):\n            self.ref_tables.pop(model,\'\')\n\n        # prefetching references format\n        self.ref_query_format = dict((table,tuple(field for field in field_from_format(table))) for table in self.ref_tables)\n\n    def get(self,id):\n        """\n        Search a single object from main table and returns a dict representing object with its aggregate objects\n        :param id: primary key of main object\n        :return:\n        """\n        obj = self.main_table[id].as_dict()\n        db = self.main_table._db\n        if obj:\n            for table, join, fields, many, field in self.aggregates:\n                if  many:\n                    obj[table._tablename + \'_set\'] = db(self.main_table._id == id).select(*fields,join=join).as_list()\n                else:\n                    obj[\'_\' + table._tablename] = db(self.main_table._id == id).select(*fields,join=join).first()\n        return obj\n\n    def list(self,fields = None, filter= None,withreferences=False):\n        """\n        Search for a object from from main table and returns a dict representing object with its aggregate objects\n        :param fields: optional fields you wants to receive\n        :param filter: optional dict of filtering in a=b form\n        :param withreferences: boolean need to know if you wants also referenced objects\n        :return:\n        """\n        db = self.main_table._db\n        if filter:\n            names, values = zip(*filter.items())\n            # extracting child filter\n\n            _fields = attrgetter(*names)(self.main_table)\n            query = db(all((field == value) for field ,value in zip(_fields,values)))\n        else:\n            query = db()\n        # adjusfing fields\n        if fields:\n            fields = attrgetter(*chain(fields,(self.main_table._id.name,)))(self.main_table)\n        else:\n            fields = self.default_fields\n        objects = query.select(*fields).as_dict()\n\n        # fetching aggregates objects\n        aggregates = {}\n        for table, join, fields, is_many, field in self.aggregates:\n            aggregs = db(self.main_table._id.belongs(set(map(itemgetter(table._id.name if is_many else field),objects.itervalues())))).select(*fields,join=join).as_list()\n            if is_many:\n                # creaing field on results\n                key = table._tablename + \'_set\'\n                for record in objects.itervalues():\n                    record[key] = []\n                # linking all aggregates to its record\n                for row in aggregs:\n                    objects[row[field]][key].append(row)\n            else:\n                aggregs = dict((x[\'id\'],x) for x in aggregs)\n                # linking all record to its aggregate\n                for record in objects.values():\n                    record[field] = aggregs.get(record[field])\n\n        # if you wants references to other objects I will do a query for every model asking by primary key\n        if withreferences:\n            references = dict(\n                (tab._tablename,dict((row.id,tab._format % row ) for row in self.main_table._db(tab.id.belongs(set(chain(*imap(objects.column,field_names))).difference((None,)))).select(*self.ref_query_format[tab])))\n                for tab,fields, field_names in ((k,v, map(attrgetter(\'name\'),v)) for k,v in self.ref_tables.items())\n            )\n        else:\n            references = {}\n        # building result object\n        return dict(\n            results = objects.values(),\n            references = references,\n            totalResults = len(objects),\n        )\n\n    def put(self,multiple = None,**kwargs):\n        id = self.main_table._id.name\n        if id in kwargs:\n            id = kwargs.pop(id)\n            ret = self.main_table.validate_and_update(id,**kwargs)\n            ret.id = id\n        else:\n            ret = self.main_table.validate_and_insert(**kwargs)\n        if ret.errors:\n            return ret\n        return self.get(ret.id)\n\n    def describe(self, _model=None, join=None):\n        model = _model or self.main_table\n        ret = dict(\n            fields = dict((field.name,dict(\n                name = field.label,\n                validators = ValidatorSerializer(field.requires if isSequenceType(field.requires) else [field.requires])(),\n                comment = field.comment,\n                readable = field.readable,\n                writable = field.writable,\n                type = field.type.split(\'(\')[0],\n                w2pwidget = field.widget,\n            )) for field in (\n                getattr(model,field)\n                for field in model.fields\n            )\n            if field.readable or field.writable),\n            doc = self.doc,\n            representation = re_format_fields.findall(model._format),\n            )\n        # if not _model:\n        #     for table,join,fields,is_many, field in self.aggregates:\n        #         if is_many:\n        #             rep = self.describe(table,join)\n        #             rep[\'cardinality\'] = \'many\'\n        #             ret[\'fields\'][table._tablename + \'_set\'] = rep\n        #         else:\n        #             rep = self.describe(table,join)\n        #             rep[\'cardinality\'] = \'single\'\n        #             ret[\'fields\'][\'_\' + table._tablename] = rep\n        return ret\n\n    def delete(self,id=None, **kwargs):\n        return self.main_table._db(self.main_table._id == id).delete()\n\nAggregateQueryResource(\'ABC\',db.bb,[db.aa.on(db.bb.aa == db.aa.id),db.cc.on(db.bb.id == db.cc.bb)])\nTableResource(db.aa)\nTableResource(db.cc)\nTableResource(db.bb)\n\n\n@jsoned\ndef model():\n    if not request.args:\n        raise Message(\'you have to specify a model like by /%s/plugin_angular/model/<model_name>\' % request.application)\n    if not request.args[0] in db:\n        raise Message(\'model %s not found on %s application\' % (request.args[0],request.application))\n    model = db[request.args[0]]\n    return dict((field.name,dict(\n        name = field.label,\n        validators = ValidatorSerializer(field.requires if isSequenceType(field.requires) else [field.requires])(),\n        comment = field.comment,\n        readable = field.readable,\n        writable = field.writable,\n        type = field.type.split(\'(\')[0],\n        w2pwidget = field.widget,\n    )) for field in (\n        getattr(model,field)\n        for field in model.fields\n    ))\n\n@jsoned\ndef restful():\n    # return BEAUTIFY(request)\n    if len(request.args)<2:\n        raise HTTP(401,\'Resource not defined. please use /%s/%s/restful/<resource name>[/arguments]\' % (request.application, request.controller))\n    # get resource name and consume args\n    resource_name = request.args.pop(0)\n    # get method name and consume args\n    method_name = request.args.pop(0)\n    # fetching resource object\n    resource = ResourceManager().resource(resource_name)\n    if not resource:\n        raise HTTP(404,\'resource %s not found on this %s.\' % (resource_name,request.application))\n    method = getattr(resource,method_name,None)\n    if not method:\n        raise HTTP(404, \'method unknown\')\n    return method (*request.args,**request.vars)\n\n# @jsoned\n# def restful():\n#     # return BEAUTIFY(request)\n#     if len(request.args)<1:\n#         raise HTTP(401,\'Resource not defined. please use /%s/%s/restful/<resource name>[/arguments]\' % (request.application, request.controller))\n#     # get resource name and consume args\n#     resource_name = request.args.pop(0)\n#     # get method name and consume args\n#     method_name = request.env.request_method.lower()\n#     # fetching resource object\n#     resource = ResourceManager().resource(resource_name)\n#     if not resource:\n#         raise HTTP(404,\'resource %s not found on this %s.\' % (resource_name,request.application))\n#     method = getattr(resource,method_name,None)\n#     if not method:\n#         raise HTTP(404, \'method unknown\')\n#     return method(*request.args,**request.vars)\n\nresponse._vars=response._caller(restful)\n'
+p7
+sS'snapshot'
+p8
+(dp9
+S'exception'
+p10
+(dp11
+S'__hash__'
+p12
+S"<method-wrapper '__hash__' of exceptions.TypeError object>"
+p13
+sS'__setattr__'
+p14
+S"<method-wrapper '__setattr__' of exceptions.TypeError object>"
+p15
+sS'__reduce_ex__'
+p16
+S'<built-in method __reduce_ex__ of exceptions.TypeError object>'
+p17
+sS'__getslice__'
+p18
+S"<method-wrapper '__getslice__' of exceptions.TypeError object>"
+p19
+sS'__getitem__'
+p20
+S"<method-wrapper '__getitem__' of exceptions.TypeError object>"
+p21
+sS'__setstate__'
+p22
+S'<built-in method __setstate__ of exceptions.TypeError object>'
+p23
+sS'args'
+p24
+S"('attribute name must be a string',)"
+p25
+sS'__reduce__'
+p26
+S'<built-in method __reduce__ of exceptions.TypeError object>'
+p27
+sS'__str__'
+p28
+S"<method-wrapper '__str__' of exceptions.TypeError object>"
+p29
+sS'__format__'
+p30
+S'<built-in method __format__ of exceptions.TypeError object>'
+p31
+sS'__getattribute__'
+p32
+S"<method-wrapper '__getattribute__' of exceptions.TypeError object>"
+p33
+sS'__class__'
+p34
+S"<type 'exceptions.TypeError'>"
+p35
+sS'__unicode__'
+p36
+S'<built-in method __unicode__ of exceptions.TypeError object>'
+p37
+sS'__delattr__'
+p38
+S"<method-wrapper '__delattr__' of exceptions.TypeError object>"
+p39
+sS'__subclasshook__'
+p40
+S'<built-in method __subclasshook__ of type object>'
+p41
+sS'__repr__'
+p42
+S"<method-wrapper '__repr__' of exceptions.TypeError object>"
+p43
+sS'__dict__'
+p44
+S'{}'
+p45
+sS'__sizeof__'
+p46
+S'<built-in method __sizeof__ of exceptions.TypeError object>'
+p47
+sS'__doc__'
+p48
+S"'Inappropriate argument type.'"
+p49
+sS'__init__'
+p50
+S"<method-wrapper '__init__' of exceptions.TypeError object>"
+p51
+sS'__new__'
+p52
+S'<built-in method __new__ of type object>'
+p53
+ssS'evalue'
+p54
+S'attribute name must be a string'
+p55
+sS'request'
+p56
+cgluon.html
+XML_unpickle
+p57
+(S'sg]\x00\x00<div><table><tr><td style="font-weight:bold;vertical-align:top;">ajax</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">application</td><td style="vertical-align:top;">:</td><td><div>web2angular</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">args</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>bb</div></td></tr><tr><td><div>get</div></td></tr><tr><td><div>2</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cid</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">client</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">controller</td><td style="vertical-align:top;">:</td><td><div>plugin_angular</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cookies</td><td style="vertical-align:top;">:</td><td><div><table><tr><td style="font-weight:bold;vertical-align:top;">session_id_admin</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1-c925e9a3-9779-4d07-94c4-3f50cf0b7483<table><tr><td style="font-weight:bold;vertical-align:top;">comment</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">domain</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">expires</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">httponly</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">max-age</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">path</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">secure</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">version</td><td style="vertical-align:top;">:</td><td><div></div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_id_tenant</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1-79462994-a350-4031-8ad1-028be1a0f54b<table><tr><td style="font-weight:bold;vertical-align:top;">comment</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">domain</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">expires</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">httponly</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">max-age</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">path</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">secure</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">version</td><td style="vertical-align:top;">:</td><td><div></div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_id_web2angular</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91<table><tr><td style="font-weight:bold;vertical-align:top;">comment</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">domain</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">expires</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">httponly</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">max-age</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">path</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">secure</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">version</td><td style="vertical-align:top;">:</td><td><div></div></td></tr></table></div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">env</td><td style="vertical-align:top;">:</td><td><div><table><tr><td style="font-weight:bold;vertical-align:top;">HTTP_ACCEPT</td><td style="vertical-align:top;">:</td><td><div>text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_ACCEPT_ENCODING</td><td style="vertical-align:top;">:</td><td><div>gzip, deflate, sdch</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_ACCEPT_LANGUAGE</td><td style="vertical-align:top;">:</td><td><div>it-IT,it;q=0.8,en-US;q=0.6,en;q=0.4</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_CACHE_CONTROL</td><td style="vertical-align:top;">:</td><td><div>no-cache</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_CONNECTION</td><td style="vertical-align:top;">:</td><td><div>keep-alive</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_COOKIE</td><td style="vertical-align:top;">:</td><td><div>session_id_tenant=127.0.0.1-79462994-a350-4031-8ad1-028be1a0f54b; session_id_admin=127.0.0.1-c925e9a3-9779-4d07-94c4-3f50cf0b7483; session_id_web2angular=127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_HOST</td><td style="vertical-align:top;">:</td><td><div>localhost:8000</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_PRAGMA</td><td style="vertical-align:top;">:</td><td><div>no-cache</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">HTTP_USER_AGENT</td><td style="vertical-align:top;">:</td><td><div>Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.89 Safari/537.36</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">PATH_INFO</td><td style="vertical-align:top;">:</td><td><div>/web2angular/plugin_angular/restful/bb/get/2</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">QUERY_STRING</td><td style="vertical-align:top;">:</td><td><div>withreferences=id</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">REMOTE_ADDR</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">REMOTE_PORT</td><td style="vertical-align:top;">:</td><td><div>52187</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">REQUEST_METHOD</td><td style="vertical-align:top;">:</td><td><div>GET</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">SCRIPT_NAME</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">SERVER_NAME</td><td style="vertical-align:top;">:</td><td><div>computer-2.station</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">SERVER_PORT</td><td style="vertical-align:top;">:</td><td><div>8000</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">SERVER_PROTOCOL</td><td style="vertical-align:top;">:</td><td><div>HTTP/1.1</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">SERVER_SOFTWARE</td><td style="vertical-align:top;">:</td><td><div>Rocket 1.2.6</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">app_folders</td><td style="vertical-align:top;">:</td><td><div>set([&#x27;/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/&#x27;])</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">applications_parent</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cmd_args</td><td style="vertical-align:top;">:</td><td><div><table></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cmd_options</td><td style="vertical-align:top;">:</td><td><div>&lt;Values at 0x107565368: {&#x27;verbose&#x27;: False, &#x27;ip&#x27;: &#x27;0.0.0.0&#x27;, &#x27;debuglevel&#x27;: 30, &#x27;with_scheduler&#x27;: False, &#x27;ips&#x27;: [&#x27;192.168.1.100&#x27;], &#x27;shutdown_timeout&#x27;: 5, &#x27;taskbar&#x27;: False, &#x27;with_coverage&#x27;: False, &#x27;scheduler_groups&#x27;: None, &#x27;port&#x27;: 8000, &#x27;maxthreads&#x27;: None, &#x27;softcron&#x27;: False, &#x27;server_name&#x27;: &#x27;computer-2.station&#x27;, &#x27;bpython&#x27;: False, &#x27;nogui&#x27;: False, &#x27;pid_filename&#x27;: &#x27;httpserver.pid&#x27;, &#x27;extcron&#x27;: False, &#x27;runcron&#x27;: False, &#x27;run_system_tests&#x27;: False, &#x27;test&#x27;: None, &#x27;folder&#x27;: &#x27;/Users/nihil/PycharmProjects/untitled/web2py&#x27;, &#x27;config&#x27;: &#x27;&#x27;, &#x27;minthreads&#x27;: 20, &#x27;shell&#x27;: None, &#x27;run&#x27;: &#x27;&#x27;, &#x27;log_filename&#x27;: &#x27;httpserver.log&#x27;, &#x27;profiler_dir&#x27;: None, &#x27;args&#x27;: [&#x27;&#x27;], &#x27;socket_timeout&#x27;: 5, &#x27;ssl_ca_certificate&#x27;: None, &#x27;scheduler&#x27;: None, &#x27;interfaces&#x27;: None, &#x27;ssl_private_key&#x27;: &#x27;&#x27;, &#x27;gae&#x27;: None, &#x27;password&#x27;: &#x27;pippo&#x27;, &#x27;request_queue_size&#x27;: 5, &#x27;ssl_certificate&#x27;: &#x27;&#x27;, &#x27;cronjob&#x27;: False, &#x27;numthreads&#x27;: 20, &#x27;quiet&#x27;: False, &#x27;import_models&#x27;: False, &#x27;timeout&#x27;: 10, &#x27;plain&#x27;: False, &#x27;nobanner&#x27;: False}&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">db_sessions</td><td style="vertical-align:top;">:</td><td><div>set([])</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">debugging</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">gluon_parent</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_accept</td><td style="vertical-align:top;">:</td><td><div>text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_accept_encoding</td><td style="vertical-align:top;">:</td><td><div>gzip, deflate, sdch</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_accept_language</td><td style="vertical-align:top;">:</td><td><div>it-IT,it;q=0.8,en-US;q=0.6,en;q=0.4</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_cache_control</td><td style="vertical-align:top;">:</td><td><div>no-cache</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_connection</td><td style="vertical-align:top;">:</td><td><div>keep-alive</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_cookie</td><td style="vertical-align:top;">:</td><td><div>session_id_tenant=127.0.0.1-79462994-a350-4031-8ad1-028be1a0f54b; session_id_admin=127.0.0.1-c925e9a3-9779-4d07-94c4-3f50cf0b7483; session_id_web2angular=127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_host</td><td style="vertical-align:top;">:</td><td><div>localhost:8000</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_pragma</td><td style="vertical-align:top;">:</td><td><div>no-cache</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">http_user_agent</td><td style="vertical-align:top;">:</td><td><div>Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.89 Safari/537.36</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_jython</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_pypy</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_source</td><td style="vertical-align:top;">:</td><td><div>True</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">local_hosts</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>192.168.1.100</div></td></tr><tr><td><div>::1</div></td></tr><tr><td><div>computer-2.station</div></td></tr><tr><td><div>::ffff:127.0.0.1</div></td></tr><tr><td><div>127.0.0.1</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">path_info</td><td style="vertical-align:top;">:</td><td><div>/web2angular/plugin_angular/restful/bb/get/2</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">query_string</td><td style="vertical-align:top;">:</td><td><div>withreferences=id</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">remote_addr</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">remote_port</td><td style="vertical-align:top;">:</td><td><div>52187</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">request_method</td><td style="vertical-align:top;">:</td><td><div>GET</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">request_uri</td><td style="vertical-align:top;">:</td><td><div>/web2angular/plugin_angular/restful/bb/get/2?withreferences=id</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">script_name</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">server_name</td><td style="vertical-align:top;">:</td><td><div>computer-2.station</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">server_port</td><td style="vertical-align:top;">:</td><td><div>8000</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">server_protocol</td><td style="vertical-align:top;">:</td><td><div>HTTP/1.1</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">server_software</td><td style="vertical-align:top;">:</td><td><div>Rocket 1.2.6</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">web2py_path</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">web2py_version</td><td style="vertical-align:top;">:</td><td><div>2.9.12-stable+timestamp.2015.01.17.06.11.03</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.errors</td><td style="vertical-align:top;">:</td><td><div>&lt;open file &#x27;&lt;stderr&gt;&#x27;, mode &#x27;w&#x27; at 0x104ecf1e0&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.file_wrapper</td><td style="vertical-align:top;">:</td><td><div>&lt;class wsgiref.util.FileWrapper at 0x1074e2870&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.input</td><td style="vertical-align:top;">:</td><td><div>&lt;socket._fileobject object at 0x10e1f8950&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.multiprocess</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.multithread</td><td style="vertical-align:top;">:</td><td><div>True</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.run_once</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.url_scheme</td><td style="vertical-align:top;">:</td><td><div>http</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi.version</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>1</div></td></tr><tr><td><div>0</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_errors</td><td style="vertical-align:top;">:</td><td><div>&lt;open file &#x27;&lt;stderr&gt;&#x27;, mode &#x27;w&#x27; at 0x104ecf1e0&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_file_wrapper</td><td style="vertical-align:top;">:</td><td><div>&lt;class wsgiref.util.FileWrapper at 0x1074e2870&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_input</td><td style="vertical-align:top;">:</td><td><div>&lt;socket._fileobject object at 0x10e1f8950&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_multiprocess</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_multithread</td><td style="vertical-align:top;">:</td><td><div>True</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_run_once</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_url_scheme</td><td style="vertical-align:top;">:</td><td><div>http</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi_version</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>1</div></td></tr><tr><td><div>0</div></td></tr></table></div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">extension</td><td style="vertical-align:top;">:</td><td><div>html</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">folder</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">function</td><td style="vertical-align:top;">:</td><td><div>restful</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">global_settings</td><td style="vertical-align:top;">:</td><td><div><table><tr><td style="font-weight:bold;vertical-align:top;">app_folders</td><td style="vertical-align:top;">:</td><td><div>set([&#x27;/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/&#x27;])</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">applications_parent</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cmd_args</td><td style="vertical-align:top;">:</td><td><div><table></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cmd_options</td><td style="vertical-align:top;">:</td><td><div>&lt;Values at 0x107565368: {&#x27;verbose&#x27;: False, &#x27;ip&#x27;: &#x27;0.0.0.0&#x27;, &#x27;debuglevel&#x27;: 30, &#x27;with_scheduler&#x27;: False, &#x27;ips&#x27;: [&#x27;192.168.1.100&#x27;], &#x27;shutdown_timeout&#x27;: 5, &#x27;taskbar&#x27;: False, &#x27;with_coverage&#x27;: False, &#x27;scheduler_groups&#x27;: None, &#x27;port&#x27;: 8000, &#x27;maxthreads&#x27;: None, &#x27;softcron&#x27;: False, &#x27;server_name&#x27;: &#x27;computer-2.station&#x27;, &#x27;bpython&#x27;: False, &#x27;nogui&#x27;: False, &#x27;pid_filename&#x27;: &#x27;httpserver.pid&#x27;, &#x27;extcron&#x27;: False, &#x27;runcron&#x27;: False, &#x27;run_system_tests&#x27;: False, &#x27;test&#x27;: None, &#x27;folder&#x27;: &#x27;/Users/nihil/PycharmProjects/untitled/web2py&#x27;, &#x27;config&#x27;: &#x27;&#x27;, &#x27;minthreads&#x27;: 20, &#x27;shell&#x27;: None, &#x27;run&#x27;: &#x27;&#x27;, &#x27;log_filename&#x27;: &#x27;httpserver.log&#x27;, &#x27;profiler_dir&#x27;: None, &#x27;args&#x27;: [&#x27;&#x27;], &#x27;socket_timeout&#x27;: 5, &#x27;ssl_ca_certificate&#x27;: None, &#x27;scheduler&#x27;: None, &#x27;interfaces&#x27;: None, &#x27;ssl_private_key&#x27;: &#x27;&#x27;, &#x27;gae&#x27;: None, &#x27;password&#x27;: &#x27;pippo&#x27;, &#x27;request_queue_size&#x27;: 5, &#x27;ssl_certificate&#x27;: &#x27;&#x27;, &#x27;cronjob&#x27;: False, &#x27;numthreads&#x27;: 20, &#x27;quiet&#x27;: False, &#x27;import_models&#x27;: False, &#x27;timeout&#x27;: 10, &#x27;plain&#x27;: False, &#x27;nobanner&#x27;: False}&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">db_sessions</td><td style="vertical-align:top;">:</td><td><div>set([])</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">debugging</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">gluon_parent</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_jython</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_pypy</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_source</td><td style="vertical-align:top;">:</td><td><div>True</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">local_hosts</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>192.168.1.100</div></td></tr><tr><td><div>::1</div></td></tr><tr><td><div>computer-2.station</div></td></tr><tr><td><div>::ffff:127.0.0.1</div></td></tr><tr><td><div>127.0.0.1</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">web2py_version</td><td style="vertical-align:top;">:</td><td><div>2.9.12-stable+timestamp.2015.01.17.06.11.03</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_https</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_local</td><td style="vertical-align:top;">:</td><td><div>True</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_restful</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_sheduler</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">is_shell</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">now</td><td style="vertical-align:top;">:</td><td><div>datetime.datetime(2015, 3, 18, 23, 43, 48, 960284)</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">raw_args</td><td style="vertical-align:top;">:</td><td><div>bb/get/2</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">raw_extension</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">url</td><td style="vertical-align:top;">:</td><td><div>/web2angular/plugin_angular/restful/bb/get/2</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">utcnow</td><td style="vertical-align:top;">:</td><td><div>datetime.datetime(2015, 3, 18, 22, 43, 48, 960293)</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">uuid</td><td style="vertical-align:top;">:</td><td><div>web2angular/127.0.0.1.2015-03-18.23-43-48.2ca037ad-9e3a-4f93-bcb5-341b997bf168</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">wsgi</td><td style="vertical-align:top;">:</td><td><div>&lt;gluon.main.LazyWSGI object at 0x10e2ad310&gt;</div></td></tr></table></div>'
+tRp58
+sS'frames'
+p59
+(lp60
+(dp61
+S'file'
+p62
+S'/Users/nihil/PycharmProjects/untitled/web2py/gluon/restricted.py'
+p63
+sS'dump'
+p64
+(dp65
+S'environment'
+p66
+S"{'A': <class 'gluon.html.A'>, 'ANY_OF': <class 'gluon.validators.ANY_OF'>, 'ASSIGNJS': <function ASSIGNJS>, 'AggregateQueryResource': <class '__restricted__.AggregateQueryResource'>, 'Auth': <class 'gluon.tools.Auth'>, 'B': <class 'gluon.html.B'>, 'BEAUTIFY': <class 'gluon.html.BEAUTIFY'>, 'BODY': <class 'gluon.html.BODY'>, 'BR': <class 'gluon.html.BR'>, 'BUTTON': <class 'gluon.html.BUTTON'>, ...}"
+p67
+sS'ccode'
+p68
+S'<code object <module> at 0x1086140b0, file "/Use...b2angular/controllers/plugin_angular.py", line 1>'
+p69
+ssS'lnum'
+p70
+I224
+sS'lines'
+p71
+(dp72
+I224
+S'        exec ccode in environment'
+p73
+sI225
+S'    except HTTP:'
+p74
+sI226
+S'        raise'
+p75
+sI227
+S'    except RestrictedError:'
+p76
+sI228
+S'        # do not encapsulate (obfuscate) the original RestrictedError'
+p77
+sI219
+S'    try:'
+p78
+sI220
+S'        if isinstance(code, types.CodeType):'
+p79
+sI221
+S'            ccode = code'
+p80
+sI222
+S'        else:'
+p81
+sI223
+S'            ccode = compile2(code, layer)'
+p82
+ssS'call'
+p83
+S'(code="__author__ = \'nihil\'\\n\\nfrom plugin_angular import....vars)\\n\\nresponse._vars=response._caller(restful)\\n", environment={\'A\': <class \'gluon.html.A\'>, \'ANY_OF\': <class \'gluon.validators.ANY_OF\'>, \'ASSIGNJS\': <function ASSIGNJS>, \'AggregateQueryResource\': <class \'__restricted__.AggregateQueryResource\'>, \'Auth\': <class \'gluon.tools.Auth\'>, \'B\': <class \'gluon.html.B\'>, \'BEAUTIFY\': <class \'gluon.html.BEAUTIFY\'>, \'BODY\': <class \'gluon.html.BODY\'>, \'BR\': <class \'gluon.html.BR\'>, \'BUTTON\': <class \'gluon.html.BUTTON\'>, ...}, layer=\'/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/controllers/plugin_angular.py\')'
+p84
+sS'func'
+p85
+S'restricted'
+p86
+sa(dp87
+g62
+S'/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/controllers/plugin_angular.py'
+p88
+sg64
+(dp89
+S'db.aa'
+p90
+S'<Table aa (id,x)>'
+p91
+sS'db'
+p92
+S'<DAL uri="sqlite://storage.sqlite">'
+p93
+sS'TableResource'
+p94
+S"<class 'applications.web2angular.modules.plugin_angular.TableResource'>"
+p95
+ssg70
+I205
+sg71
+(dp96
+I200
+S''
+sI201
+S'    def delete(self,id=None, **kwargs):'
+p97
+sI202
+S'        return self.main_table._db(self.main_table._id == id).delete()'
+p98
+sI203
+S''
+sI204
+S"AggregateQueryResource('ABC',db.bb,[db.aa.on(db.bb.aa == db.aa.id),db.cc.on(db.bb.id == db.cc.bb)])"
+p99
+sI205
+S'TableResource(db.aa)'
+p100
+sI206
+S'TableResource(db.cc)'
+p101
+sI207
+S'TableResource(db.bb)'
+p102
+sI208
+S''
+sI209
+S''
+ssg83
+S'()'
+p103
+sg85
+S'<module>'
+p104
+sa(dp105
+g62
+S'/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/modules/plugin_angular.py'
+p106
+sg64
+(dp107
+S'table._referenced_by'
+p108
+S'[<gluon.dal.objects.Field object>, <gluon.dal.objects.Field object>]'
+p109
+sS'key'
+p110
+S'undefined'
+p111
+sS'f'
+g111
+sS'self'
+p112
+S'<applications.web2angular.modules.plugin_angular.TableResource object>'
+p113
+sS'global TableResource'
+p114
+S"<class 'applications.web2angular.modules.plugin_angular.TableResource'>"
+p115
+sS'self.references_id'
+p116
+g111
+sS'global attrgetter'
+p117
+S"<type 'operator.attrgetter'>"
+p118
+sS'global groupby'
+p119
+S"<type 'itertools.groupby'>"
+p120
+sS'TableResource.visible_fields'
+p121
+S"<bound method type.visible_fields of <class 'app...b2angular.modules.plugin_angular.TableResource'>>"
+p122
+sS'tab'
+p123
+g111
+sS'table'
+p124
+S'<Table aa (id,x)>'
+p125
+sS'builtinsorted'
+p126
+S'<built-in function sorted>'
+p127
+sS'builtinset'
+p128
+S"<type 'set'>"
+p129
+sS'builtindict'
+p130
+S"<type 'dict'>"
+p131
+ssg70
+I104
+sg71
+(dp132
+I99
+S'        super(TableResource,self).__init__(table._tablename)'
+p133
+sI100
+S'        self.table = table'
+p134
+sI101
+S'        self.__doc__ = self.table._tablename'
+p135
+sI102
+S'        self.name = self.__doc__ = self.table._tablename'
+p136
+sI103
+S''
+sI104
+S"        self.references_id = dict((tab,(set(f),TableResource.visible_fields(tab))) for tab,f in groupby(sorted(table._referenced_by,key=attrgetter('_table')),attrgetter('_table')))"
+p137
+sI105
+S'        self.references = self.references_id.copy()'
+p138
+sI106
+S'        for tab, fields in groupby(table._references,lambda x : x.referent._table):'
+p139
+sI107
+S'            self.references.setdefault(tab,(set(),TableResource.visible_fields(tab)))[0].update(fields)'
+p140
+sI108
+S'        print self.table._tablename'
+p141
+ssg83
+S'(self=<applications.web2angular.modules.plugin_angular.TableResource object>, table=<Table aa (id,x)>)'
+p142
+sg85
+g50
+sa(dp143
+g62
+S'/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/modules/plugin_angular.py'
+p144
+sg64
+(dp145
+S'key'
+p146
+g111
+sS'f'
+S'<itertools._grouper object>'
+p147
+sS'self'
+p148
+g111
+sS'builtinset'
+p149
+S"<type 'set'>"
+p150
+sS'global attrgetter'
+p151
+S"<type 'operator.attrgetter'>"
+p152
+sS'global groupby'
+p153
+S"<type 'itertools.groupby'>"
+p154
+sS'TableResource.visible_fields'
+p155
+S"<bound method type.visible_fields of <class 'app...b2angular.modules.plugin_angular.TableResource'>>"
+p156
+sS'tab'
+p157
+S'<Table bb (id,x,aa)>'
+p158
+sS'table'
+p159
+g111
+sS'builtinsorted'
+p160
+S'<built-in function sorted>'
+p161
+sS'global TableResource'
+p162
+S"<class 'applications.web2angular.modules.plugin_angular.TableResource'>"
+p163
+sS'builtindict'
+p164
+S"<type 'dict'>"
+p165
+ssg70
+I104
+sg71
+(dp166
+I99
+S'        super(TableResource,self).__init__(table._tablename)'
+p167
+sI100
+S'        self.table = table'
+p168
+sI101
+S'        self.__doc__ = self.table._tablename'
+p169
+sI102
+S'        self.name = self.__doc__ = self.table._tablename'
+p170
+sI103
+S''
+sI104
+S"        self.references_id = dict((tab,(set(f),TableResource.visible_fields(tab))) for tab,f in groupby(sorted(table._referenced_by,key=attrgetter('_table')),attrgetter('_table')))"
+p171
+sI105
+S'        self.references = self.references_id.copy()'
+p172
+sI106
+S'        for tab, fields in groupby(table._references,lambda x : x.referent._table):'
+p173
+sI107
+S'            self.references.setdefault(tab,(set(),TableResource.visible_fields(tab)))[0].update(fields)'
+p174
+sI108
+S'        print self.table._tablename'
+p175
+ssg83
+S'((tab=<Table bb (id,x,aa)>, f=<itertools._grouper object>))'
+p176
+sg85
+S'<genexpr>'
+p177
+sa(dp178
+g62
+S'/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/modules/plugin_angular.py'
+p179
+sg64
+(dp180
+S'builtintuple'
+p181
+S"<type 'tuple'>"
+p182
+sS'global attrgetter'
+p183
+S"<type 'operator.attrgetter'>"
+p184
+sS'tab.fields'
+p185
+S"['id', 'x', 'aa']"
+p186
+sS'tab'
+p187
+S'<Table bb (id,x,aa)>'
+p188
+sS'field'
+p189
+g111
+ssg70
+I96
+sg71
+(dp190
+I96
+S'        return tuple(field for field in  attrgetter(tab.fields)(tab) if field.readable or field.writable)'
+p191
+sI97
+S''
+sI98
+S'    def __init__(self, table):'
+p192
+sI99
+S'        super(TableResource,self).__init__(table._tablename)'
+p193
+sI100
+S'        self.table = table'
+p194
+sI91
+S'class TableResource(Resource):'
+p195
+sI92
+S'    doc = None'
+p196
+sI93
+S''
+sI94
+S'    @classmethod'
+p197
+sI95
+S'    def visible_fields(cls,tab):'
+p198
+ssg83
+S"(cls=<class 'applications.web2angular.modules.plugin_angular.TableResource'>, tab=<Table bb (id,x,aa)>)"
+p199
+sg85
+S'visible_fields'
+p200
+sasS'pyver'
+p201
+S'Python 2.7.9: /usr/local/opt/python/bin/python2.7 (prefix: /usr/local/Cellar/python/2.7.9/Frameworks/Python.framework/Versions/2.7)'
+p202
+sS'session'
+p203
+g57
+(S's\x1a\x00\x00\x00<div><table></table></div>'
+tRp204
+sS'etype'
+p205
+S"<type 'exceptions.TypeError'>"
+p206
+sS'date'
+p207
+S'Wed Mar 18 23:43:51 2015'
+p208
+sS'response'
+p209
+g57
+(S's-3\x00\x00<div><table><tr><td style="font-weight:bold;vertical-align:top;">body</td><td style="vertical-align:top;">:</td><td><div>&lt;cStringIO.StringO object at 0x10e25d570&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">cookies</td><td style="vertical-align:top;">:</td><td><div><table><tr><td style="font-weight:bold;vertical-align:top;">session_id_web2angular</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91<table><tr><td style="font-weight:bold;vertical-align:top;">comment</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">domain</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">expires</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">httponly</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">max-age</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">path</td><td style="vertical-align:top;">:</td><td><div>/</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">secure</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">version</td><td style="vertical-align:top;">:</td><td><div></div></td></tr></table></div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">delimiters</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>{{</div></td></tr><tr><td><div>}}</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">files</td><td style="vertical-align:top;">:</td><td><div><table></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">flash</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">form_label_separator</td><td style="vertical-align:top;">:</td><td><div>: </div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">formstyle</td><td style="vertical-align:top;">:</td><td><div>table3cols</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">generic_patterns</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>*</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">google_analytics_id</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">headers</td><td style="vertical-align:top;">:</td><td><div><table><tr><td style="font-weight:bold;vertical-align:top;">X-Powered-By</td><td style="vertical-align:top;">:</td><td><div>web2py</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">logo</td><td style="vertical-align:top;">:</td><td><div><a class="brand" href="http://www.web2py.com/"><b>web<span>2</span>py</b>&trade;&nbsp;</a></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">menu</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div><table><tr><td><div>Home</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>/web2angular/default/index</div></td></tr><tr><td><div><table></table></div></td></tr></table></div></td></tr><tr><td><div><table><tr><td><div><span class="highlighted">web2py</span></div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>http://web2py.com</div></td></tr><tr><td><div><table><tr><td><div><table><tr><td><div>My Sites</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>/admin/default/site</div></td></tr></table></div></td></tr><tr><td><div><table><tr><td><div>This App</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>/admin/default/design/web2angular</div></td></tr><tr><td><div>[(&lt;lazyT &#x27;Controller&#x27;&gt;, False, &#x27;/admin/default/edit/web2angular/controllers/plugin_angular.py&#x27;), (&lt;lazyT &#x27;View&#x27;&gt;, False, &#x27;/admin/default/edit/web2angular/views/plugin_angular/restful.html&#x27;), (&lt;lazyT &#x27;Layout&#x27;&gt;, False, &#x27;/admin/default/edit/web2angular/views/layout.html&#x27;), (&lt;lazyT &#x27;Stylesheet&#x27;&gt;, False, &#x27;/admin/default/edit/web2angular/static/css/web2py.css&#x27;), (&lt;lazyT &#x27;DB Model&#x27;&gt;, False, &#x27;/admin/default/edit/web2angular/models/db.py&#x27;), (&lt;lazyT &#x27;Menu Model&#x27;&gt;, False, &#x27;/admin/default/edit/web2angular/models/menu.py&#x27;), (&lt;lazyT &#x27;Database&#x27;&gt;, False, &#x27;/web2angular/appadmin/index&#x27;), (&lt;lazyT &#x27;Errors&#x27;&gt;, False, &#x27;/admin/default/errors/web2angular&#x27;), (&lt;lazyT &#x27;About&#x27;&gt;, False, &#x27;/admin/default/about/web2angular&#x27;)]</div></td></tr></table></div></td></tr><tr><td><div><table><tr><td><div>web2py.com</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>http://www.web2py.com</div></td></tr><tr><td><div>[(&lt;lazyT &#x27;Download&#x27;&gt;, False, &#x27;http://www.web2py.com/examples/default/download&#x27;), (&lt;lazyT &#x27;Support&#x27;&gt;, False, &#x27;http://www.web2py.com/examples/default/support&#x27;), (&lt;lazyT &#x27;Demo&#x27;&gt;, False, &#x27;http://web2py.com/demo_admin&#x27;), (&lt;lazyT &#x27;Quick Examples&#x27;&gt;, False, &#x27;http://web2py.com/examples/default/examples&#x27;), (&lt;lazyT &#x27;FAQ&#x27;&gt;, False, &#x27;http://web2py.com/AlterEgo&#x27;), (&lt;lazyT &#x27;Videos&#x27;&gt;, False, &#x27;http://www.web2py.com/examples/default/videos/&#x27;), (&lt;lazyT &#x27;Free Applications&#x27;&gt;, False, &#x27;http://web2py.com/appliances&#x27;), (&lt;lazyT &#x27;Plugins&#x27;&gt;, False, &#x27;http://web2py.com/plugins&#x27;), (&lt;lazyT &#x27;Layouts&#x27;&gt;, False, &#x27;http://web2py.com/layouts&#x27;), (&lt;lazyT &#x27;Recipes&#x27;&gt;, False, &#x27;http://web2pyslices.com/&#x27;), (&lt;lazyT &#x27;Semantic&#x27;&gt;, False, &#x27;http://web2py.com/semantic&#x27;)]</div></td></tr></table></div></td></tr><tr><td><div><table><tr><td><div>Documentazione</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>http://www.web2py.com/book</div></td></tr><tr><td><div>[(&lt;lazyT &#x27;Preface&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/00&#x27;), (&lt;lazyT &#x27;Introduction&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/01&#x27;), (&lt;lazyT &#x27;Python&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/02&#x27;), (&lt;lazyT &#x27;Overview&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/03&#x27;), (&lt;lazyT &#x27;The Core&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/04&#x27;), (&lt;lazyT &#x27;The Views&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/05&#x27;), (&lt;lazyT &#x27;Database&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/06&#x27;), (&lt;lazyT &#x27;Forms and Validators&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/07&#x27;), (&lt;lazyT &#x27;Email and SMS&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/08&#x27;), (&lt;lazyT &#x27;Access Control&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/09&#x27;), (&lt;lazyT &#x27;Services&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/10&#x27;), (&lt;lazyT &#x27;Ajax Recipes&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/11&#x27;), (&lt;lazyT &#x27;Components and Plugins&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/12&#x27;), (&lt;lazyT &#x27;Deployment Recipes&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/13&#x27;), (&lt;lazyT &#x27;Other Recipes&#x27;&gt;, False, &#x27;http://www.web2py.com/book/default/chapter/14&#x27;), (&lt;lazyT &#x27;Buy this book&#x27;&gt;, False, &#x27;http://stores.lulu.com/web2py&#x27;)]</div></td></tr></table></div></td></tr><tr><td><div><table><tr><td><div>Community</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>None</div></td></tr><tr><td><div>[(&lt;lazyT &#x27;Groups&#x27;&gt;, False, &#x27;http://www.web2py.com/examples/default/usergroups&#x27;), (&lt;lazyT &#x27;Twitter&#x27;&gt;, False, &#x27;http://twitter.com/web2py&#x27;), (&lt;lazyT &#x27;Live Chat&#x27;&gt;, False, &#x27;http://webchat.freenode.net/?channels=web2py&#x27;)]</div></td></tr></table></div></td></tr><tr><td><div><table><tr><td><div>Plugins</div></td></tr><tr><td><div>False</div></td></tr><tr><td><div>None</div></td></tr><tr><td><div>[(&#x27;plugin_wiki&#x27;, False, &#x27;http://web2py.com/examples/default/download&#x27;), (&lt;lazyT &#x27;Other Plugins&#x27;&gt;, False, &#x27;http://web2py.com/plugins&#x27;), (&lt;lazyT &#x27;Layout Plugins&#x27;&gt;, False, &#x27;http://web2py.com/layouts&#x27;)]</div></td></tr></table></div></td></tr></table></div></td></tr></table></div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">meta</td><td style="vertical-align:top;">:</td><td><div><table><tr><td style="font-weight:bold;vertical-align:top;">author</td><td style="vertical-align:top;">:</td><td><div>Your Name &lt;you@example.com&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">generator</td><td style="vertical-align:top;">:</td><td><div>Web2py Web Framework</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">keywords</td><td style="vertical-align:top;">:</td><td><div>web2py, python, framework</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">models_to_run</td><td style="vertical-align:top;">:</td><td><div><table><tr><td><div>^\\w+\\.py$</div></td></tr><tr><td><div>^plugin_angular/\\w+\\.py$</div></td></tr><tr><td><div>^plugin_angular/restful/\\w+\\.py$</div></td></tr></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">postprocessing</td><td style="vertical-align:top;">:</td><td><div><table></table></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_client</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_cookie_compression_level</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_cookie_expires</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_cookie_key</td><td style="vertical-align:top;">:</td><td><div>None</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_data_name</td><td style="vertical-align:top;">:</td><td><div>session_data_web2angular</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_file</td><td style="vertical-align:top;">:</td><td><div>&lt;open file &#x27;/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/sessions/14c/096/127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91&#x27;, mode &#x27;rb+&#x27; at 0x10e18c660&gt;</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_filename</td><td style="vertical-align:top;">:</td><td><div>/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/sessions/127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_hash</td><td style="vertical-align:top;">:</td><td><div>165b1051364db8e8c173d4e9b8a3ffa0</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_id</td><td style="vertical-align:top;">:</td><td><div>127.0.0.1-be17f7dd-c98c-44c7-93b3-2198c3032e91</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_id_name</td><td style="vertical-align:top;">:</td><td><div>session_id_web2angular</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_locked</td><td style="vertical-align:top;">:</td><td><div>True</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_masterapp</td><td style="vertical-align:top;">:</td><td><div>web2angular</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_new</td><td style="vertical-align:top;">:</td><td><div>False</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">session_storage_type</td><td style="vertical-align:top;">:</td><td><div>file</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">status</td><td style="vertical-align:top;">:</td><td><div>200</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">subtitle</td><td style="vertical-align:top;">:</td><td><div></div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">title</td><td style="vertical-align:top;">:</td><td><div>Web2Angular</div></td></tr><tr><td style="font-weight:bold;vertical-align:top;">view</td><td style="vertical-align:top;">:</td><td><div>plugin_angular/restful.html</div></td></tr></table></div>'
+tRp210
+sS'locals'
+p211
+(dp212
+S'tab'
+p213
+S'<Table bb (id,x,aa)>'
+p214
+sS'cls'
+p215
+S"<class 'applications.web2angular.modules.plugin_angular.TableResource'>"
+p216
+sssS'traceback'
+p217
+S'Traceback (most recent call last):\n  File "/Users/nihil/PycharmProjects/untitled/web2py/gluon/restricted.py", line 224, in restricted\n    exec ccode in environment\n  File "/Users/nihil/PycharmProjects/untitled/web2py/applications/web2angular/controllers/plugin_angular.py", line 205, in <module>\n    TableResource(db.aa)\n  File "applications/web2angular/modules/plugin_angular.py", line 104, in __init__\n    self.references_id = dict((tab,(set(f),TableResource.visible_fields(tab))) for tab,f in groupby(sorted(table._referenced_by,key=attrgetter(\'_table\')),attrgetter(\'_table\')))\n  File "applications/web2angular/modules/plugin_angular.py", line 104, in <genexpr>\n    self.references_id = dict((tab,(set(f),TableResource.visible_fields(tab))) for tab,f in groupby(sorted(table._referenced_by,key=attrgetter(\'_table\')),attrgetter(\'_table\')))\n  File "applications/web2angular/modules/plugin_angular.py", line 96, in visible_fields\n    return tuple(field for field in  attrgetter(tab.fields)(tab) if field.readable or field.writable)\nTypeError: attribute name must be a string\n'
+p218
+s.

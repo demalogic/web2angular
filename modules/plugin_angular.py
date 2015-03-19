@@ -69,6 +69,18 @@ class Resource(object):
     def __init__(self,name):
         ResourceManager().register(self,name)
 
+    def get(self,id):
+        raise NotImplemented()
+
+    def list(self,fields=None,filter = {}):
+        raise  NotImplemented()
+
+    def put(self,**kwargs):
+        raise NotImplemented()
+
+    def describe(self):
+        raise NotImplemented()
+
 def unallowed(*args,**kwargs):
     raise HTTP(401,'Not allowed')
 
@@ -79,21 +91,46 @@ for func_name in ('get','put','post','delete'):
 class TableResource(Resource):
     doc = None
 
+    @classmethod
+    def visible_fields(cls,tab):
+        return tuple(field for field in  attrgetter(*tab.fields)(tab) if field.readable or field.writable)
+
     def __init__(self, table):
         super(TableResource,self).__init__(table._tablename)
         self.table = table
         self.__doc__ = self.table._tablename
         self.name = self.__doc__ = self.table._tablename
 
-    def get(self,id):
+        self.references_id = dict((tab,(set(f),TableResource.visible_fields(tab))) for tab,f in groupby(sorted(table._referenced_by,key=attrgetter('_table')),attrgetter('_table')))
+        self.references = self.references_id.copy()
+        for tab, fields in groupby(table._references,lambda x : x.referent._table):
+            self.references.setdefault(tab,(set(),TableResource.visible_fields(tab)))[0].update(fields)
+        print self.table._tablename
+        self.visible_fields = TableResource.visible_fields(table)
+        # TODO: possibile ottimizzazione e' il raggruppamento anche per campi referenziati (quando una tabella ha piu' campi che puntano alla stessa tabella)
+
+    def get_references(self,objects,id=False):
+        # getting refereced objects
+        if id:
+            references = self.references_id
+        else:
+            references = self.references
+        ret = {}
+        for table, (fields,table_fields) in references.items():
+            selection = tuple(field.belongs(objects.column(field.referent.name)) if field._table != self.table else field.referent.belongs(objects.column(field)) for field in fields)
+            results = self.table._db(reduce(or_,selection)).select(*((table._id,) if id else table_fields))
+            ret[table._tablename] = dict(results = results, totalResults = len(results))
+            print self.table._db._lastsql
+        return ret
+
+    def get(self,id, withreferences=False):
         """
         fetch a single object from table identifyed by ID
         """
-        ret = self.table(id)
-        ret._representsAs = self.table._format % ret
-        for field in self.table._references:
-            ref = field.referent
-            ret['_' + field.name] = ref.table._format % ref.table[ret[field.name]];
+        object = self.table._db(self.table.id == id).select(*self.visible_fields)
+        ret = {self.table._tablename : dict(results = object, totalResults = 1)}
+        if withreferences:
+            ret.update(self.get_references(object,withreferences=='id'))
         return ret
 
     def list(self,fields = None, filter= None,withreferences=False):
@@ -106,26 +143,11 @@ class TableResource(Resource):
         query = None
         if filter:
             query = reduce(and_,(self.table[field] == value for field,value in filter.iteritems()))
-        records = self.table._db(query).select(*(fields or (self.table.ALL,)))
-        for row in records:
-            row._representsAs = self.table._format % row
-        ref_tables = {}
-        for tab_ref in self.table._references:
-            ref_tables.setdefault(tab_ref.referent._table,set()).add(tab_ref)
+        objects = self.table._db(query).select(*(fields or self.visible_fields))
+        ret = {self.table._tablename : dict(results = objects, totalResults = len(objects))}
         if withreferences:
-            # referenced = tuple(a.referent for  a in  self.table._references)
-            referenced = tuple(x.referent for x in attrgetter(*self.table._fields)(self.table) if x.type.startswith('reference'))
-            references = dict(
-                (tab._tablename,dict((row.id,tab._format % row ) for row in self.table._db(tab.id.belongs(set(chain(*imap(records.column,field_names))).difference((None,)))).select(*field_from_format(tab))))
-                for tab,fields, field_names in ((k,v, map(attrgetter('name'),v)) for k,v in ref_tables.items())
-            )
-        else:
-            references = {}
-        return dict(
-            results = records,
-            totalResults = len(records),
-            references = references,
-        )
+            ret.update(self.get_references(objects,withreferences=='id'))
+        return ret
 
     def put(self,multiple = None,**kwargs):
         if 'id' in kwargs:
@@ -140,7 +162,7 @@ class TableResource(Resource):
 
     def describe(self):
         model = self.table
-        return dict(
+        return {model._tablename : dict(
             fields = dict((field.name,dict(
                 name = field.label,
                 validators = ValidatorSerializer(field.requires if isSequenceType(field.requires) else [field.requires])(),
@@ -153,10 +175,33 @@ class TableResource(Resource):
                 getattr(model,field)
                 for field in model.fields
             )
-            if field.readable or field.writable),
+            if (field.readable or field.writable) and not field.type.startswith('reference')),
             doc = self.doc or self.__doc__,
-            representation = re_format_fields.findall(model._format)
-        )
+            representation = re_format_fields.findall(model._format),
+            name = self.table._tablename,
+            references = tuple(
+                dict(
+                    name = field.label,
+                    comment = field.comment,
+                    readable = field.readable,
+                    writable = field.writable,
+                    to = field.referent.table._tablename,
+                    id = field.name,
+                )
+                for field in model._references
+            ),
+            referencedBy = tuple(
+                dict(
+                    name = field.label,
+                    comment = field.comment,
+                    readable = field.readable,
+                    writable = field.writable,
+                    by = field.table._tablename,
+                    id = field.name,
+                )
+                for field in model._referenced_by
+            ),
+        )}
 
     def delete(self,id=None, **kwargs):
         return self.table._db(self.table.id == id).delete()

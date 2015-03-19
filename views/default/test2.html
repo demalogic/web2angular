@@ -1,0 +1,65 @@
+{{ extend 'layout.html'}}
+
+<div ng-controller="test22">
+    <ul class="btn-group">
+        <li class="btn" ng-repeat="x in ['aa','bb','cc']" ng-click="call(x)">
+            {* x *}
+        </li>
+    </ul>
+    <div ng-if="vuoiAA">
+        <w2p-data resource="aa">
+            <h1>AA</h1>
+            <ul>
+                <li ng-repeat="item in items">
+                    {* item.x *}
+                    <ul>
+                        <li ng-repeat="bb in item.bb_aa_set">
+                            {*bb.x*}
+                            <ul>
+                                <li ng-repeat="cc in bb.cc_bb_set">
+                                    {* cc.x *}
+                                </li>
+                            </ul>
+                        </li>
+                    </ul>
+                    <ul style="color : red">
+                        <li ng-repeat="vito in item.cc_vito_set">
+                            {* vito.toString() *}
+                        </li>
+                    </ul>
+                </li>
+            </ul>
+        </w2p-data>
+    </div>
+    <div ng-if="vuoiBB">
+        <h1>BB</h1>
+        <w2p-data resource="bb">
+            <ul>
+                <li ng-repeat="item in items">
+                    {* item.x *} {* item._aa.x *}
+                    <ul>
+                        <li ng-repeat="b in item.cc_bb_set">
+                            {* b.toString() *}
+                        </li>
+                    </ul>
+                </li>
+            </ul>
+        </w2p-data>
+    </div>
+    <div ng-if="vuoiCC">
+        <H1>CC</H1>
+        <w2p-data resource="cc">
+            <ul>
+                <li ng-repeat="item in items">
+                    {* item.x *} ({* item._bb.x *}) --> {* item._bb._aa.x *}
+                    <span style="color:red">{* item._vito.x *}</span>
+                    <span style="color:darkblue;">
+                       {* item._f.toString()*}
+                    </span>
+                </li>
+            </ul>
+        </w2p-data>
+    </div>
+</div>
+
+

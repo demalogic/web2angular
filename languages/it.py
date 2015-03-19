@@ -219,6 +219,7 @@
 'Sure you want to delete this object?': 'Vuoi veramente cancellare questo oggetto?',
 'Table': 'tabella',
 'Table name': 'Nome tabella',
+'test %s': 'test %s',
 'The "query" is a condition like "db.table1.field1==\'value\'". Something like "db.table1.field1==db.table2.field2" results in a SQL JOIN.': 'La richiesta (query) è una condizione come ad esempio  "db.tabella1.campo1==\'valore\'". Una condizione come "db.tabella1.campo1==db.tabella2.campo2" produce un "JOIN" SQL.',
 'The Core': 'The Core',
 'The output of the file is a dictionary that was rendered by the view %s': 'L\'output del file è un "dictionary" che è stato visualizzato dalla vista %s',
